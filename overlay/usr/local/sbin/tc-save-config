@@ -1,0 +1,35 @@
+#!/bin/sh
+# Persist the configuration handed to us on stdin onto the TCCONF partition.
+# Exits non-zero (with a reason on stderr) when there is nowhere to write, which
+# the UI reports as "saved for this session only".
+set -u
+
+RUN=/run/thinclient
+MEDIA="$RUN/media"
+TMP="$RUN/save.json"
+
+cat > "$TMP"
+if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$TMP" 2>/dev/null; then
+    echo "refusing to save invalid JSON" >&2
+    rm -f "$TMP"; exit 2
+fi
+
+DEV="$(blkid -L TCCONF 2>/dev/null || true)"
+if [ -z "$DEV" ]; then
+    echo "no TCCONF partition on this device" >&2
+    rm -f "$TMP"; exit 3
+fi
+
+mountpoint -q "$MEDIA" || mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null
+mount -o remount,rw "$MEDIA" 2>/dev/null || true
+if ! touch "$MEDIA/.tcwrite" 2>/dev/null; then
+    echo "TCCONF partition is read-only" >&2
+    rm -f "$TMP"; exit 4
+fi
+rm -f "$MEDIA/.tcwrite"
+
+cp "$TMP" "$MEDIA/config.json.new" && mv "$MEDIA/config.json.new" "$MEDIA/config.json"
+sync
+cp "$TMP" "$RUN/media-config.json"
+rm -f "$TMP"
+echo "saved to $DEV"

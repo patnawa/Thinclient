@@ -1,0 +1,104 @@
+# Core package set for the ThinClient image.
+# One package per line. Optional feature groups live in chroot-setup.sh and are
+# controlled by the INCLUDE_* flags in config.sh.
+# Everything here is installed with --no-install-recommends.
+
+# --- kernel, boot and live plumbing ---
+linux-image-amd64
+initramfs-tools
+live-boot
+live-boot-initramfs-tools
+zstd
+
+# --- init and base system ---
+systemd
+systemd-sysv
+# minbase has no sudo, and the kiosk user needs it for reboot/poweroff/nmcli
+# and the tc-* config helpers. Without it every privileged UI action fails.
+sudo
+systemd-timesyncd
+dbus
+udev
+libpam-systemd
+kmod
+procps
+psmisc
+less
+locales
+tzdata
+console-setup
+kbd
+
+# --- firmware (wired NICs and common GPUs; wifi blobs are optional) ---
+firmware-linux-free
+firmware-realtek
+firmware-sof-signed
+intel-microcode
+amd64-microcode
+
+# --- networking ---
+network-manager
+iproute2
+iputils-ping
+dnsutils
+ca-certificates
+curl
+wget
+openssl
+
+# --- X11 ---
+xserver-xorg-core
+xserver-xorg-legacy
+xserver-xorg-input-libinput
+xserver-xorg-video-vesa
+xserver-xorg-video-fbdev
+xserver-xorg-video-amdgpu
+xserver-xorg-video-nouveau
+xserver-xorg-video-qxl
+xserver-xorg-video-vmware
+xinit
+x11-xserver-utils
+x11-utils
+xkb-data
+openbox
+unclutter
+fonts-dejavu-core
+# lets the session bar send FreeRDP its full-screen toggle
+xdotool
+
+# --- the RDP client itself ---
+freerdp3-x11
+
+# --- audio (playback + microphone redirection) ---
+pipewire
+pipewire-pulse
+pipewire-audio
+wireplumber
+libspa-0.2-modules
+alsa-ucm-conf
+alsa-topology-conf
+
+# --- connection manager UI ---
+python3
+python3-gi
+gir1.2-gtk-3.0
+librsvg2-common
+adwaita-icon-theme
+
+# --- storage handling for USB redirection ---
+dosfstools
+exfatprogs
+ntfs-3g
+udev
+
+# --- Secure Boot chain (Debian signed shim + grub) ---
+shim-signed
+grub-efi-amd64-signed
+
+# --- installing to a client's internal disk (tc-install) ---
+gdisk
+parted
+grub-common
+grub-pc-bin
+grub-efi-amd64-bin
+efibootmgr

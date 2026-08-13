@@ -1,0 +1,96 @@
+#!/bin/sh
+# The X session. Launched by xinit from thinclient.service; when this script
+# exits, X exits and systemd restarts the whole thing.
+set -u
+
+CFG=/etc/thinclient
+RUN=/run/thinclient
+mkdir -p "$RUN"
+
+# Read every setting we need in one interpreter start. Four separate python
+# invocations cost the best part of half a second on the path between power-on
+# and a usable screen.
+eval "$(python3 - <<'PYEOF' 2>/dev/null
+import shlex, sys
+sys.path.insert(0, "/usr/local/lib/thinclient")
+import tcconfig
+device = tcconfig.load()["device"]
+for name, key, default in (
+    ("LAYOUT", "keyboard_layout", "us"),
+    ("VARIANT", "keyboard_variant", ""),
+    ("BLANK", "screen_blank_minutes", "0"),
+    ("RESOLUTION", "resolution", "auto"),
+):
+    print("%s=%s" % (name, shlex.quote(str(device.get(key, default) or default))))
+PYEOF
+)"
+
+# If that failed for any reason, fall back to safe defaults rather than to an
+# empty screen.
+LAYOUT="${LAYOUT:-us}"
+VARIANT="${VARIANT:-}"
+BLANK="${BLANK:-0}"
+RESOLUTION="${RESOLUTION:-auto}"
+
+# --- input ------------------------------------------------------------------
+setxkbmap "${LAYOUT:-us}" ${VARIANT:+"$VARIANT"} 2>/dev/null || setxkbmap us
+
+# --- screen -----------------------------------------------------------------
+xsetroot -solid "#16191d" 2>/dev/null
+if [ "$BLANK" -gt 0 ] 2>/dev/null; then
+    xset s "$((BLANK * 60))" "$((BLANK * 60))"
+    xset +dpms dpms "$((BLANK * 60))" "$((BLANK * 60))" "$((BLANK * 60))"
+else
+    # A thin client that blanks mid-shift is a support call. Off by default.
+    xset s off -dpms
+fi
+
+if [ "$RESOLUTION" != "auto" ] && [ -n "$RESOLUTION" ]; then
+    OUTPUT="$(xrandr | awk '/ connected/{print $1; exit}')"
+    [ -n "$OUTPUT" ] && xrandr --output "$OUTPUT" --mode "$RESOLUTION" 2>/dev/null
+fi
+
+# --- window manager ---------------------------------------------------------
+openbox --config-file /etc/xdg/openbox/rc.xml &
+OPENBOX_PID=$!
+sleep 0.3
+
+# Hide the pointer when it is not being used; matches how a Wyse unit behaves.
+command -v unclutter >/dev/null && unclutter -idle 5 -root &
+
+# --- audio ------------------------------------------------------------------
+# PipeWire is socket-activated by the user systemd instance. Nudge it so the
+# very first RDP session already has sound rather than the second.
+if command -v pipewire >/dev/null; then
+    systemctl --user start pipewire.socket pipewire-pulse.socket 2>/dev/null || {
+        pipewire & sleep 0.2; pipewire-pulse & wireplumber &
+    }
+fi
+
+# --- connection manager -----------------------------------------------------
+export GDK_BACKEND=x11
+export NO_AT_BRIDGE=1
+export PYTHONDONTWRITEBYTECODE=1
+
+# Booted from the "Install to internal disk" entry? Then the installer is the
+# session, and the connection manager never runs.
+APP=/usr/local/lib/thinclient/manager.py
+if grep -qw 'tc.install=1' /proc/cmdline 2>/dev/null; then
+    APP=/usr/local/lib/thinclient/installer.py
+fi
+
+while :; do
+    python3 "$APP"
+    status=$?
+    [ "$status" -eq 0 ] && break
+    # The manager crashed. Do not spin: report, pause, come back.
+    echo "connection manager exited with status $status" >&2
+    if [ -x /usr/bin/xmessage ]; then
+        xmessage -center -timeout 10 "Connection manager restarting..."
+    else
+        sleep 3
+    fi
+done
+
+kill "$OPENBOX_PID" 2>/dev/null
+exit 0

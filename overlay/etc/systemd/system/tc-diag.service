@@ -1,0 +1,17 @@
+[Unit]
+Description=ThinClient boot diagnostics
+# Only when booted from the "diagnostic console" entry, so a production client
+# never pays for this.
+ConditionKernelCommandLine=tc.debug=1
+After=thinclient.service multi-user.target
+Wants=thinclient.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tc-diag
+RemainAfterExit=yes
+StandardOutput=journal
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

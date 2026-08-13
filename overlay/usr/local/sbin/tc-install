@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Install ThinClient onto a machine's internal disk.
+
+The installed system is the same read-only squashfs the live image runs, copied
+onto a local boot partition rather than unpacked into a normal filesystem. That
+keeps every property that makes this thing a thin client: the running system is
+immutable, all state lives in RAM, and an update means replacing one file. It
+also boots faster than the ISO, which spends seconds probing an optical device
+that isn't there.
+
+Layout written to the target disk (GPT, bootable on both BIOS and UEFI):
+
+    p1   1 MiB    BIOS boot partition, holds GRUB's core image on BIOS machines
+    p2   1 GiB    ESP, FAT32, label THINBOOT - kernel, initrd, squashfs, GRUB
+    p3   rest     FAT32, label TCCONF - persistent settings, readable on Windows
+
+    tc-install --list
+    tc-install --target /dev/sda --yes
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/thinclient")
+
+LIVE_MEDIUM = "/run/live/medium"
+ESP_LABEL = "THINBOOT"
+CONFIG_LABEL = "TCCONF"
+ESP_SIZE_MIB = 1024
+MIN_DISK_BYTES = 4 * 1024 ** 3
+
+
+class InstallError(RuntimeError):
+    pass
+
+
+def run(argv, check=True, quiet=False):
+    if not quiet:
+        print("  $ %s" % " ".join(argv))
+    result = subprocess.run(argv, capture_output=True, text=True)
+    if check and result.returncode != 0:
+        raise InstallError("%s failed: %s" % (argv[0], (result.stderr or result.stdout).strip()))
+    return result
+
+
+# ------------------------------------------------------------------ disks ----
+def live_device():
+    """The device the live system booted from - never a valid install target."""
+    try:
+        source = subprocess.run(
+            ["findmnt", "-no", "SOURCE", LIVE_MEDIUM],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if not source:
+        return ""
+    # /dev/sdb1 -> /dev/sdb, /dev/nvme0n1p1 -> /dev/nvme0n1
+    return re.sub(r"p?\d+$", "", source)
+
+
+def candidates():
+    """Disks we could install onto, with the live medium excluded."""
+    booted_from = live_device()
+    listing = run(
+        ["lsblk", "-J", "-b", "-d", "-o", "NAME,PATH,SIZE,MODEL,TYPE,RM,RO,TRAN"],
+        check=False, quiet=True,
+    )
+    try:
+        blocks = json.loads(listing.stdout).get("blockdevices", [])
+    except ValueError:
+        return []
+
+    disks = []
+    for device in blocks:
+        if device.get("type") != "disk" or device.get("ro"):
+            continue
+        path = device.get("path") or "/dev/%s" % device.get("name")
+        if path == booted_from:
+            continue
+        if re.match(r"^/dev/(loop|ram|zram|sr)", path):
+            continue
+        size = int(device.get("size") or 0)
+        disks.append({
+            "path": path,
+            "size": size,
+            "size_gb": round(size / 1024 ** 3, 1),
+            "model": (device.get("model") or "").strip() or "unknown",
+            "removable": bool(device.get("rm")),
+            "transport": device.get("tran") or "",
+            "too_small": size < MIN_DISK_BYTES,
+        })
+    return disks
+
+
+# ---------------------------------------------------------------- install ----
+def partition(target):
+    print("partitioning %s" % target)
+    run(["wipefs", "-a", target])
+    run(["sgdisk", "--zap-all", target], check=False)
+    run([
+        "sgdisk",
+        "--new=1:0:+1M", "--typecode=1:ef02", "--change-name=1:BIOSBOOT",
+        "--new=2:0:+%dM" % ESP_SIZE_MIB, "--typecode=2:ef00", "--change-name=2:%s" % ESP_LABEL,
+        "--new=3:0:0", "--typecode=3:0700", "--change-name=3:%s" % CONFIG_LABEL,
+        target,
+    ])
+    run(["partprobe", target], check=False)
+    # udev needs a moment before the new nodes exist.
+    for _ in range(20):
+        if all(os.path.exists(part_path(target, n)) for n in (2, 3)):
+            break
+        time.sleep(0.5)
+    else:
+        raise InstallError("the new partitions did not appear on %s" % target)
+
+
+def part_path(target, number):
+    # /dev/sda -> /dev/sda2 ; /dev/nvme0n1 -> /dev/nvme0n1p2
+    if re.search(r"\d$", target):
+        return "%sp%d" % (target, number)
+    return "%s%d" % (target, number)
+
+
+def format_partitions(target):
+    print("creating filesystems")
+    run(["mkfs.vfat", "-F", "32", "-n", ESP_LABEL, part_path(target, 2)])
+    run(["mkfs.vfat", "-F", "32", "-n", CONFIG_LABEL, part_path(target, 3)])
+
+
+def copy_system(target, mountpoint):
+    print("copying the system")
+    os.makedirs(os.path.join(mountpoint, "live"), exist_ok=True)
+    for name in ("vmlinuz", "initrd.img", "filesystem.squashfs"):
+        source = os.path.join(LIVE_MEDIUM, "live", name)
+        if not os.path.exists(source):
+            raise InstallError("%s is missing from the boot medium" % name)
+        destination = os.path.join(mountpoint, "live", name)
+        size = os.path.getsize(source)
+        print("  %-22s %6.1f MB" % (name, size / 1024 ** 2))
+        shutil.copyfile(source, destination)
+    run(["sync"], quiet=True)
+
+
+def install_bootloader(target, mountpoint):
+    print("installing the bootloader")
+    # UEFI. --removable writes EFI/BOOT/BOOTX64.EFI, which every firmware will
+    # boot without needing an NVRAM entry - important for machines that are
+    # imaged and moved around.
+    efi = ["grub-install", "--target=x86_64-efi", "--efi-directory=%s" % mountpoint,
+           "--boot-directory=%s/boot" % mountpoint, "--removable", "--recheck"]
+    if os.path.exists("/usr/lib/grub/x86_64-efi-signed/grubx64.efi.signed"):
+        efi.append("--uefi-secure-boot")
+    run(efi)
+
+    # BIOS, into the 1 MiB bios_grub partition. Machines that only do legacy
+    # boot are exactly the ones being repurposed as thin clients.
+    run(["grub-install", "--target=i386-pc",
+         "--boot-directory=%s/boot" % mountpoint, "--recheck", target], check=False)
+
+    cmdline = ("boot=live components union=overlay quiet loglevel=3 "
+               "live-media=/dev/disk/by-label/%s" % ESP_LABEL)
+    grub_dir = os.path.join(mountpoint, "boot", "grub")
+    os.makedirs(grub_dir, exist_ok=True)
+    with open(os.path.join(grub_dir, "grub.cfg"), "w", encoding="utf-8") as fh:
+        fh.write(
+            "set default=0\n"
+            "set timeout=1\n"
+            "insmod all_video\n"
+            "insmod gfxterm\n"
+            "terminal_output gfxterm\n"
+            "\n"
+            'menuentry "ThinClient" {\n'
+            "    search --no-floppy --set=root --label %s\n"
+            "    linux  /live/vmlinuz %s\n"
+            "    initrd /live/initrd.img\n"
+            "}\n"
+            'menuentry "ThinClient (safe graphics)" {\n'
+            "    search --no-floppy --set=root --label %s\n"
+            "    linux  /live/vmlinuz %s nomodeset tc.safegfx=1\n"
+            "    initrd /live/initrd.img\n"
+            "}\n"
+            'menuentry "ThinClient (diagnostic console)" {\n'
+            "    search --no-floppy --set=root --label %s\n"
+            "    linux  /live/vmlinuz boot=live components union=overlay tc.debug=1 "
+            "console=tty0 console=ttyS0,115200 live-media=/dev/disk/by-label/%s\n"
+            "    initrd /live/initrd.img\n"
+            "}\n"
+            % (ESP_LABEL, cmdline, ESP_LABEL, cmdline, ESP_LABEL, ESP_LABEL)
+        )
+
+
+def seed_config(target):
+    """Put the running configuration on the new TCCONF partition."""
+    mountpoint = "/run/thinclient/install-config"
+    os.makedirs(mountpoint, exist_ok=True)
+    run(["mount", part_path(target, 3), mountpoint])
+    try:
+        import tcconfig
+        cfg = tcconfig.load()
+        payload = json.dumps(
+            {"schema": 1, "device": cfg["device"], "connections": cfg["connections"]},
+            indent=2,
+        )
+        with open(os.path.join(mountpoint, "config.json"), "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        os.makedirs(os.path.join(mountpoint, "ca-certificates"), exist_ok=True)
+        print("  settings written to the %s partition" % CONFIG_LABEL)
+    except Exception as exc:                       # noqa: BLE001
+        print("  could not seed the configuration: %s" % exc, file=sys.stderr)
+    finally:
+        run(["umount", mountpoint], check=False, quiet=True)
+
+
+def install(target):
+    if not os.path.exists(target):
+        raise InstallError("no such device: %s" % target)
+    if target == live_device():
+        raise InstallError("%s is the disk this client booted from" % target)
+
+    mountpoint = "/run/thinclient/install-esp"
+    partition(target)
+    format_partitions(target)
+
+    os.makedirs(mountpoint, exist_ok=True)
+    run(["mount", part_path(target, 2), mountpoint])
+    try:
+        copy_system(target, mountpoint)
+        install_bootloader(target, mountpoint)
+    finally:
+        run(["umount", mountpoint], check=False, quiet=True)
+
+    seed_config(target)
+    run(["sync"], quiet=True)
+    print("installation finished")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Install ThinClient to a local disk")
+    parser.add_argument("--list", action="store_true", help="print candidate disks as JSON")
+    parser.add_argument("--target", help="device to install onto, e.g. /dev/sda")
+    parser.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    args = parser.parse_args()
+
+    if args.list:
+        print(json.dumps(candidates(), indent=2))
+        return 0
+
+    if not args.target:
+        disks = candidates()
+        if not disks:
+            sys.exit("no installable disk found")
+        print("Available disks:")
+        for disk in disks:
+            print("  %-14s %6.1f GB  %s%s" % (
+                disk["path"], disk["size_gb"], disk["model"],
+                "  (too small)" if disk["too_small"] else ""))
+        sys.exit("\nchoose one with --target")
+
+    if os.geteuid() != 0:
+        sys.exit("tc-install must run as root")
+
+    if not args.yes:
+        print("\nEVERYTHING ON %s WILL BE ERASED." % args.target)
+        if input("Type INSTALL to continue: ").strip() != "INSTALL":
+            sys.exit("cancelled")
+
+    try:
+        install(args.target)
+    except InstallError as exc:
+        sys.exit("installation failed: %s" % exc)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

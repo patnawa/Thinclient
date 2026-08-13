@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "device": {
+    "hostname_prefix": "thin",
+    "keyboard_layout": "us",
+    "keyboard_variant": "",
+    "timezone": "Asia/Bangkok",
+    "ntp_server": "pool.ntp.org",
+    "screen_blank_minutes": 0,
+    "resolution": "auto",
+    "admin_password": "",
+    "auto_connect": "",
+    "allow_settings": true,
+    "allow_console": false,
+    "allow_terminal": true,
+    "session_bar": true,
+    "show_ip": true
+  },
+  "connections": [
+    {
+      "id": "main",
+      "name": "Windows Server 2025",
+      "host": "192.168.1.10",
+      "port": 3389,
+      "username": "",
+      "domain": "",
+      "password": "",
+      "prompt_credentials": true,
+      "gateway": "",
+      "gateway_username": "",
+      "gateway_domain": "",
+      "app": "",
+      "display": "fullscreen",
+      "cert_policy": "ignore",
+      "security": "auto",
+      "gfx": "auto",
+      "network": "auto",
+      "audio_out": true,
+      "audio_in": true,
+      "redirect_clipboard": true,
+      "redirect_usb_storage": true,
+      "redirect_usb_devices": false,
+      "redirect_smartcard": true,
+      "redirect_printers": true,
+      "auto_reconnect": true,
+      "reconnect_delay": 5,
+      "extra_args": []
+    }
+  ]
+}

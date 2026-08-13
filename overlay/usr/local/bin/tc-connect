@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Launch one configured connection straight from a shell.
+
+    tc-connect                 # the first connection
+    tc-connect main            # by id
+    tc-connect main --print    # show the FreeRDP command line instead of running it
+
+Useful for testing an image and for scripted/kiosk setups that bypass the UI.
+"""
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, "/usr/local/lib/thinclient")
+import tcconfig  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Start a ThinClient RDP session")
+    parser.add_argument("connection", nargs="?", help="connection id (default: the first one)")
+    parser.add_argument("--print", dest="show", action="store_true",
+                        help="print the command instead of running it")
+    parser.add_argument("--password", help="override the stored password")
+    parser.add_argument("--once", action="store_true", help="do not auto-reconnect")
+    parser.add_argument("--debug", action="store_true", help="verbose FreeRDP logging")
+    args = parser.parse_args()
+
+    cfg = tcconfig.load()
+    if not cfg["connections"]:
+        sys.exit("no connections are configured")
+
+    conn = tcconfig.find(cfg, args.connection) if args.connection else cfg["connections"][0]
+    if conn is None:
+        sys.exit("no such connection: %s (have: %s)"
+                 % (args.connection, ", ".join(c["id"] for c in cfg["connections"])))
+
+    argv, stdin_text = tcconfig.build_command(
+        conn, cfg["device"], password=args.password, debug=args.debug
+    )
+
+    if args.show:
+        print(" ".join(a if not a.startswith("/p:") else "/p:***" for a in argv))
+        return 0
+
+    if not os.environ.get("DISPLAY"):
+        sys.exit("no X display - run this from the client's session")
+
+    while True:
+        proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE if stdin_text else subprocess.DEVNULL
+        )
+        if stdin_text:
+            try:
+                proc.stdin.write(stdin_text.encode())
+                proc.stdin.close()
+            except OSError:
+                pass
+        code = proc.wait()
+        if code == 0 or args.once or not conn.get("auto_reconnect"):
+            return code
+        delay = max(2, int(conn.get("reconnect_delay", 5)))
+        print("session ended with %d, reconnecting in %ds" % (code, delay), file=sys.stderr)
+        time.sleep(delay)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,81 @@
+#!/bin/sh
+# Boot diagnostics, printed to the console (and therefore to the serial port
+# when the client was started from the "diagnostic console" boot entry).
+# Runs only when tc.debug=1 is on the kernel command line.
+set -u
+
+exec >/dev/console 2>&1
+
+echo
+echo "===================== ThinClient diagnostics ====================="
+echo "--- build ---"
+cat /etc/thinclient/build-info 2>/dev/null
+
+# This unit is itself part of the boot transaction, so systemd will not call the
+# boot "finished" while we are running and systemd-analyze time refuses to
+# answer. The number that actually matters to a user is how long it took to get
+# to the session, so take that straight from the journal.
+echo "--- time to session ---"
+# short-monotonic prints "[   9.037123] host unit: msg" - the timestamp is
+# space-padded inside the brackets, so pull it out with sed rather than by
+# splitting on whitespace.
+stamp() { sed -n '1s/^\[ *\([0-9.]*\)\].*/\1/p'; }
+printf '  thinclient.service started at %ss\n' \
+    "$(journalctl -b -o short-monotonic --no-pager -u thinclient.service 2>/dev/null | stamp)"
+printf '  multi-user.target reached at %ss\n' \
+    "$(journalctl -b -o short-monotonic --no-pager 2>/dev/null |
+       grep -m1 'Reached target.*Multi-User' | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p')"
+printf '  connection manager drew at %ss\n' \
+    "$(journalctl -b -o short-monotonic --no-pager 2>/dev/null |
+       grep -m1 -i 'session-1.scope' | sed -n 's/^\[ *\([0-9.]*\)\].*/\1/p')"
+systemd-analyze time 2>&1 | head -2
+
+echo "--- jobs still running ---"
+systemctl list-jobs --no-pager 2>/dev/null | head -6
+
+echo "--- slowest units ---"
+systemd-analyze blame 2>/dev/null | head -12
+
+echo "--- critical chain ---"
+systemd-analyze critical-chain --no-pager 2>/dev/null | head -14
+
+echo "--- failed units ---"
+systemctl --failed --no-pager --plain 2>/dev/null | head -10
+
+echo "--- memory ---"
+free -m | head -2
+
+echo "--- session ---"
+systemctl is-active thinclient.service tc-config.service 2>/dev/null | tr '\n' ' '
+echo
+loginctl list-sessions --no-pager 2>/dev/null | head -5
+
+echo "--- graphics ---"
+# X runs rootless as the kiosk user, so its log lives in that user's home,
+# not in /var/log.
+XLOG=""
+for candidate in /home/thin/.local/share/xorg/Xorg.0.log /var/log/Xorg.0.log; do
+    [ -f "$candidate" ] && XLOG="$candidate" && break
+done
+if [ -n "$XLOG" ]; then
+    echo "  log: $XLOG"
+    grep -E '\(EE\)' "$XLOG" 2>/dev/null | head -4
+    # Which driver actually took the screen, not merely which modules loaded.
+    # modesetting means KMS acceleration; vesa or fbdev means the slow path.
+    echo -n "  active driver:"
+    grep -oE '\(II\) (modeset|fbdev|vesa|amdgpu|nouveau|qxl|vmware)\(' "$XLOG" 2>/dev/null |
+        tr -d '(II) ' | sort -u | tr '\n' ' '
+    echo
+    grep -oE '[0-9]{3,4}x[0-9]{3,4}' "$XLOG" 2>/dev/null | head -3 | tr '\n' ' '; echo
+else
+    echo "  no Xorg log found"
+fi
+
+echo "--- network ---"
+ip -brief address 2>/dev/null | grep -v '^lo'
+
+echo "--- errors this boot ---"
+journalctl -b -p err --no-pager 2>/dev/null | tail -12
+
+echo "=================================================================="
+echo

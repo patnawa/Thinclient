@@ -1,0 +1,28 @@
+# Build output. Large (the ISO alone is ~450 MB, the squashfs ~380 MB), fully
+# reproducible from source, and the test screenshots in here can contain the
+# contents of a real remote desktop - so it must never be published.
+/out/
+
+# Site-specific build settings: real server addresses, domains, time zones.
+# Kept out so one site's infrastructure is never carried into a checkout
+# somewhere else, or into a public repository.
+build/config.local.sh
+
+# Anything captured from a client or a session.
+*.iso
+*.squashfs
+*.qcow2
+*.vhdx
+*.ppm
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Editors and OS clutter
+*.swp
+*~
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

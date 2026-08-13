@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Deliberately empty. On a kiosk the desktop right-click menu is the easiest
+  way out of the appliance, so there is nothing behind it.
+-->
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="ThinClient">
+  </menu>
+</openbox_menu>

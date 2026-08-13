@@ -1,0 +1,76 @@
+#!/bin/sh
+# Mount removable storage under /media/tc so FreeRDP's /drive:USB redirection
+# hands it to the Windows session. Driven by udev -> tc-automount@.service.
+set -u
+
+ACTION="${1:-}"
+DEVNAME="${2:-}"
+BASE=/media/tc
+DEV="/dev/$DEVNAME"
+
+[ -n "$DEVNAME" ] || exit 0
+mkdir -p "$BASE"
+
+label_for() {
+    LABEL="$(blkid -o value -s LABEL "$DEV" 2>/dev/null)"
+    LABEL="$(printf '%s' "$LABEL" | tr -cd 'A-Za-z0-9._-')"
+    [ -n "$LABEL" ] || LABEL="$DEVNAME"
+    # Never collide with an existing mount point.
+    TARGET="$BASE/$LABEL"
+    N=2
+    while mountpoint -q "$TARGET"; do
+        TARGET="$BASE/$LABEL-$N"
+        N=$((N + 1))
+    done
+    printf '%s' "$TARGET"
+}
+
+case "$ACTION" in
+add)
+    # The configuration partition is handled by tc-fetch-config, not here.
+    [ "$(blkid -o value -s LABEL "$DEV" 2>/dev/null)" = "TCCONF" ] && exit 0
+    # The live medium we booted from is already mounted; leave it alone.
+    findmnt -no TARGET "$DEV" >/dev/null 2>&1 && exit 0
+
+    FSTYPE="$(blkid -o value -s TYPE "$DEV" 2>/dev/null)"
+    [ -n "$FSTYPE" ] || exit 0
+    case "$FSTYPE" in iso9660|squashfs|udf|crypto_LUKS|linux_raid_member) exit 0 ;; esac
+
+    UID_THIN="$(id -u thin 2>/dev/null || echo 1000)"
+    GID_THIN="$(id -g thin 2>/dev/null || echo 1000)"
+    TARGET="$(label_for)"
+    mkdir -p "$TARGET"
+
+    case "$FSTYPE" in
+    vfat|exfat|ntfs|ntfs3)
+        OPTS="rw,nosuid,nodev,noatime,uid=$UID_THIN,gid=$GID_THIN,umask=0077,flush"
+        ;;
+    *)
+        OPTS="rw,nosuid,nodev,noatime"
+        ;;
+    esac
+
+    if mount -t "$FSTYPE" -o "$OPTS" "$DEV" "$TARGET" 2>/dev/null \
+       || mount -o "rw,nosuid,nodev,noatime" "$DEV" "$TARGET" 2>/dev/null; then
+        chown "$UID_THIN:$GID_THIN" "$TARGET" 2>/dev/null || true
+        echo "tc-automount: $DEV -> $TARGET ($FSTYPE)"
+    else
+        rmdir "$TARGET" 2>/dev/null
+        echo "tc-automount: could not mount $DEV ($FSTYPE)" >&2
+    fi
+    ;;
+remove)
+    for TARGET in "$BASE"/*; do
+        [ -d "$TARGET" ] || continue
+        if ! mountpoint -q "$TARGET"; then
+            rmdir "$TARGET" 2>/dev/null
+            continue
+        fi
+        if [ "$(findmnt -no SOURCE "$TARGET" 2>/dev/null)" = "$DEV" ]; then
+            umount -l "$TARGET" 2>/dev/null
+            rmdir "$TARGET" 2>/dev/null
+        fi
+    done
+    ;;
+esac
+exit 0

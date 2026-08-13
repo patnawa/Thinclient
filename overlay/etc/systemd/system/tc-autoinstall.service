@@ -1,0 +1,17 @@
+[Unit]
+Description=ThinClient unattended installation
+# Only when explicitly asked for on the kernel command line. This erases a disk,
+# so it must never be able to run by accident.
+ConditionKernelCommandLine=tc.install.auto=1
+After=tc-config.service local-fs.target
+Wants=tc-config.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tc-autoinstall
+RemainAfterExit=yes
+StandardOutput=journal
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

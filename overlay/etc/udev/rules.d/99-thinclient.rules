@@ -1,0 +1,17 @@
+# ThinClient device rules.
+
+# --- removable storage -> /media/tc, so RDP can redirect it as a drive -------
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", \
+    ENV{DEVTYPE}=="partition", ENV{SYSTEMD_WANTS}+="tc-automount@%k.service"
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", \
+    ENV{DEVTYPE}=="disk", ENV{SYSTEMD_WANTS}+="tc-automount@%k.service"
+ACTION=="add", SUBSYSTEM=="block", KERNEL=="mmcblk[0-9]p[0-9]", ENV{ID_FS_USAGE}=="filesystem", \
+    ENV{SYSTEMD_WANTS}+="tc-automount@%k.service"
+
+# --- USB device redirection --------------------------------------------------
+# FreeRDP's urbdrc channel talks to /dev/bus/usb directly; the kiosk user is in
+# plugdev, so give the group access rather than running the client as root.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", MODE="0660", GROUP="plugdev"
+
+# --- smart card readers ------------------------------------------------------
+SUBSYSTEM=="usb", ENV{ID_SMARTCARD_READER}=="1", MODE="0660", GROUP="plugdev"

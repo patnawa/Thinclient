@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Apply device-level settings from the merged configuration.
+
+Runs once at boot (tc-config.service) and again whenever the UI saves. Only
+touches things that are cheap and safe to re-apply.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, "/usr/local/lib/thinclient")
+import tcconfig  # noqa: E402
+
+XORG_LOCKDOWN = "/etc/X11/xorg.conf.d/20-thinclient-lockdown.conf"
+
+
+def sh(argv, **kwargs):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=30, **kwargs)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print("tc-apply-config: %s failed: %s" % (argv[0], exc), file=sys.stderr)
+        return None
+
+
+def kernel_args():
+    try:
+        with open("/proc/cmdline", "r", encoding="utf-8") as fh:
+            return fh.read().split()
+    except OSError:
+        return []
+
+
+def apply_hostname(device):
+    """thin-<last three MAC octets>, so every client is identifiable on the LAN."""
+    prefix = re.sub(r"[^A-Za-z0-9-]", "", device.get("hostname_prefix", "thin")) or "thin"
+    mac = ""
+    for interface in sorted(os.listdir("/sys/class/net")):
+        if interface == "lo":
+            continue
+        try:
+            with open("/sys/class/net/%s/address" % interface, "r", encoding="utf-8") as fh:
+                candidate = fh.read().strip()
+        except OSError:
+            continue
+        if candidate and candidate != "00:00:00:00:00:00":
+            mac = candidate
+            break
+    suffix = "".join(mac.split(":")[-3:]) if mac else "000000"
+    hostname = "%s-%s" % (prefix, suffix)
+    if open("/etc/hostname").read().strip() != hostname:
+        with open("/etc/hostname", "w", encoding="utf-8") as fh:
+            fh.write(hostname + "\n")
+    sh(["hostnamectl", "set-hostname", hostname])
+
+    try:
+        with open("/etc/hosts", "r", encoding="utf-8") as fh:
+            lines = [ln for ln in fh if not ln.startswith("127.0.1.1")]
+        lines.insert(1, "127.0.1.1\t%s\n" % hostname)
+        with open("/etc/hosts", "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except OSError:
+        pass
+
+
+def apply_time(device):
+    timezone = device.get("timezone") or ""
+    if timezone and os.path.exists("/usr/share/zoneinfo/" + timezone):
+        sh(["timedatectl", "set-timezone", timezone])
+
+    ntp = (device.get("ntp_server") or "").strip()
+    if ntp:
+        os.makedirs("/etc/systemd/timesyncd.conf.d", exist_ok=True)
+        path = "/etc/systemd/timesyncd.conf.d/20-thinclient.conf"
+        wanted = "[Time]\nNTP=%s\n" % ntp
+        current = ""
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                current = fh.read()
+        except OSError:
+            pass
+        if current != wanted:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(wanted)
+            sh(["systemctl", "restart", "systemd-timesyncd"])
+
+
+def apply_keyboard(device):
+    """Record the layout for anything that reads /etc/default/keyboard.
+
+    The graphical session applies it itself with setxkbmap, which is instant.
+    Running setupcon here as well cost about half a second of every boot to
+    style text consoles this image never shows.
+    """
+    layout = device.get("keyboard_layout") or "us"
+    variant = device.get("keyboard_variant") or ""
+    with open("/etc/default/keyboard", "w", encoding="utf-8") as fh:
+        fh.write('XKBMODEL="pc105"\nXKBLAYOUT="%s"\nXKBVARIANT="%s"\n'
+                 'XKBOPTIONS=""\nBACKSPACE="guess"\n' % (layout, variant))
+    # Only bother with the console when the operator has enabled one.
+    if device.get("allow_console") or "tc.debug=1" in kernel_args():
+        sh(["setupcon", "--save"])
+
+
+def apply_lockdown(device):
+    """Block VT switching and Ctrl+Alt+Backspace unless explicitly allowed."""
+    debug = "tc.debug=1" in kernel_args()
+    if device.get("allow_console") or debug:
+        if os.path.exists(XORG_LOCKDOWN):
+            os.remove(XORG_LOCKDOWN)
+        return
+    os.makedirs("/etc/X11/xorg.conf.d", exist_ok=True)
+    with open(XORG_LOCKDOWN, "w", encoding="utf-8") as fh:
+        fh.write('Section "ServerFlags"\n'
+                 '    Option "DontVTSwitch" "true"\n'
+                 '    Option "DontZap" "true"\n'
+                 'EndSection\n')
+
+
+def apply_safe_graphics():
+    """tc.safegfx=1 forces the vesa/fbdev path for machines modesetting hates."""
+    path = "/etc/X11/xorg.conf.d/10-thinclient-safegfx.conf"
+    if "tc.safegfx=1" in kernel_args():
+        os.makedirs("/etc/X11/xorg.conf.d", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('Section "Device"\n'
+                     '    Identifier "safe"\n'
+                     '    Driver "fbdev"\n'
+                     'EndSection\n')
+    elif os.path.exists(path):
+        os.remove(path)
+
+
+def main():
+    cfg = tcconfig.load()
+    device = cfg["device"]
+    apply_hostname(device)
+    apply_time(device)
+    apply_keyboard(device)
+    apply_lockdown(device)
+    apply_safe_graphics()
+    if "tc.debug=1" in kernel_args():
+        os.makedirs("/run/thinclient", exist_ok=True)
+        open("/run/thinclient/debug", "w").close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

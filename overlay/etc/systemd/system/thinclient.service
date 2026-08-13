@@ -1,0 +1,42 @@
+[Unit]
+Description=ThinClient session (X11 + connection manager)
+Documentation=file:///etc/thinclient/build-info
+After=tc-config.service systemd-user-sessions.service
+Wants=tc-config.service
+Conflicts=getty@tty7.service
+
+[Service]
+Type=simple
+User=thin
+PAMName=login
+WorkingDirectory=/home/thin
+Environment=XDG_SESSION_TYPE=x11
+Environment=HOME=/home/thin
+
+# A real login session on seat0 is what lets the X server take DRM master
+# without being setuid root.
+TTYPath=/dev/tty7
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty7
+UtmpMode=user
+
+# Make tty7 the foreground console before X asks for it. logind only hands a
+# session the DRM device while that session is active; starting X on a
+# background VT makes logind return a paused fd, and X then falls back from
+# accelerated modesetting to vesa/fbdev. The '+' runs this one step as root.
+ExecStartPre=+/usr/bin/chvt 7
+
+ExecStart=/usr/bin/xinit /usr/local/bin/tc-session -- /usr/bin/X :0 vt7 -keeptty -nolisten tcp -novtswitch
+
+# An appliance never sits at a dead screen: if the session dies, bring it back.
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

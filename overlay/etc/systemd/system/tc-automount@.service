@@ -1,0 +1,11 @@
+[Unit]
+Description=ThinClient removable storage mount for %I
+BindsTo=dev-%i.device
+After=dev-%i.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/tc-automount add %I
+ExecStop=/usr/local/sbin/tc-automount remove %I
+TimeoutStartSec=30

@@ -1,0 +1,75 @@
+#!/bin/sh
+# Collect configuration from the boot media and from the network, before the
+# session starts. Never fatal: a client with no config still boots to the UI.
+set -u
+
+RUN=/run/thinclient
+MEDIA="$RUN/media"
+mkdir -p "$RUN" "$MEDIA" /media/tc
+
+# The connection manager runs as "thin" and writes its working configuration and
+# session log in here. systemd-tmpfiles normally sets this up; re-assert it in
+# case this script created the directory first.
+chgrp thin "$RUN" 2>/dev/null || true
+chmod 1775 "$RUN" 2>/dev/null || true
+
+valid_json() {
+    python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,dict) else 1)' "$1" 2>/dev/null
+}
+
+kernel_arg() {
+    for word in $(cat /proc/cmdline); do
+        case "$word" in "$1"=*) echo "${word#*=}"; return 0 ;; esac
+    done
+    return 1
+}
+
+# --- 1. a TCCONF partition on the USB stick ---------------------------------
+DEV="$(blkid -L TCCONF 2>/dev/null || true)"
+if [ -n "$DEV" ]; then
+    mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null \
+        || mount -o ro "$DEV" "$MEDIA" 2>/dev/null \
+        || echo "tc-fetch-config: could not mount $DEV" >&2
+    for candidate in "$MEDIA/config.json" "$MEDIA/thinclient/config.json"; do
+        if [ -f "$candidate" ] && valid_json "$candidate"; then
+            cp "$candidate" "$RUN/media-config.json"
+            echo "tc-fetch-config: loaded $candidate"
+            break
+        fi
+    done
+    # Drop-in CA certificates let 'strict' certificate checking work on a LAN
+    # with an internal PKI.
+    if [ -d "$MEDIA/ca-certificates" ]; then
+        cp "$MEDIA"/ca-certificates/*.crt /usr/local/share/ca-certificates/ 2>/dev/null \
+            && update-ca-certificates >/dev/null 2>&1
+    fi
+fi
+
+# --- 2. central configuration over HTTP -------------------------------------
+# Priority: kernel cmdline, then whatever the DHCP dispatcher recorded.
+URL="$(kernel_arg tc.config || true)"
+if [ -z "${URL:-}" ] && [ -f "$RUN/dhcp-config-url" ]; then
+    URL="$(cat "$RUN/dhcp-config-url")"
+fi
+
+if [ -n "${URL:-}" ]; then
+    # The MAC lets one URL serve per-device files, the way a Wyse unit pulls
+    # wnos.ini:  http://server/tc/config.json?mac=aa:bb:cc:dd:ee:ff
+    MAC="$(cat /sys/class/net/*/address 2>/dev/null | grep -v '^00:00:00:00:00:00$' | head -1)"
+    if curl -fsS --retry 4 --retry-delay 2 --retry-connrefused --max-time 25 \
+            -H "X-ThinClient-MAC: ${MAC:-unknown}" \
+            -o "$RUN/remote-config.json.tmp" "$URL"; then
+        if valid_json "$RUN/remote-config.json.tmp"; then
+            mv "$RUN/remote-config.json.tmp" "$RUN/remote-config.json"
+            echo "tc-fetch-config: loaded $URL"
+        else
+            echo "tc-fetch-config: $URL did not return valid JSON" >&2
+            rm -f "$RUN/remote-config.json.tmp"
+        fi
+    else
+        echo "tc-fetch-config: could not fetch $URL" >&2
+        rm -f "$RUN/remote-config.json.tmp"
+    fi
+fi
+
+exit 0
