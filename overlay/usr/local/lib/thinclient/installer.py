@@ -27,8 +27,10 @@ class Installer(Gtk.Window):
         self.get_style_context().add_class("tc-root")
         self.set_default_size(900, 640)
         self.connect("destroy", Gtk.main_quit)
+        self.connect("delete-event", self.on_delete)
         self.fullscreen()
         self.running = False
+        self.idle_controls = []
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(outer)
@@ -79,6 +81,7 @@ class Installer(Gtk.Window):
         refresh.get_style_context().add_class("tc-btn")
         refresh.connect("clicked", lambda *_: self.load_disks())
         bar.pack_start(refresh, False, False, 0)
+        self.idle_controls.append(refresh)
 
         for text, action in (("Restart", "reboot"), ("Shut Down", "poweroff")):
             button = Gtk.Button(label=text)
@@ -86,6 +89,7 @@ class Installer(Gtk.Window):
                 button.get_style_context().add_class(cls)
             button.connect("clicked", lambda _b, a=action: self.power(a))
             bar.pack_end(button, False, False, 0)
+            self.idle_controls.append(button)
         outer.pack_start(bar, False, False, 0)
 
         self.load_disks()
@@ -177,6 +181,8 @@ class Installer(Gtk.Window):
         self.running = True
         self.install_btn.set_sensitive(False)
         self.disks.set_sensitive(False)
+        for control in self.idle_controls:
+            control.set_sensitive(False)
         self.progress.set_fraction(0.05)
         self.progress.set_text("starting")
         self.status.set_text("Installing to %s - do not switch the machine off."
@@ -210,6 +216,8 @@ class Installer(Gtk.Window):
         self.progress.set_text("finished" if ok else "failed")
         self.disks.set_sensitive(True)
         self.install_btn.set_sensitive(True)
+        for control in self.idle_controls:
+            control.set_sensitive(True)
 
         dialog = Gtk.MessageDialog(
             transient_for=self, modal=True,
@@ -232,7 +240,21 @@ class Installer(Gtk.Window):
         return False
 
     def power(self, action):
+        if self.running:
+            self.status.set_text(
+                "Installation is still writing the disk; wait for it to finish."
+            )
+            return
         subprocess.Popen(["sudo", "-n", "/usr/bin/systemctl", action])
+
+    def on_delete(self, *_):
+        """Do not let a window-manager shortcut interrupt a disk install."""
+        if self.running:
+            self.status.set_text(
+                "Installation is still writing the disk; wait for it to finish."
+            )
+            return True
+        return False
 
 
 def main():

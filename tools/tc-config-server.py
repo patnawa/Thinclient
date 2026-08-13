@@ -17,6 +17,10 @@ exists it is served to that device, and everyone else gets config.json. Nothing
 has to be generated per client and nothing has to know in advance which clients
 exist.
 
+The MAC header is a configuration-selection hint, not authentication. A client
+can claim any MAC, so per-device files must not contain secrets that require an
+access-control boundary.
+
 Requests are logged with the MAC, which doubles as an inventory of what booted
 and when.
 """
@@ -29,40 +33,125 @@ import socket
 import socketserver
 import sys
 import time
+import urllib.parse
 
 CONFIG_NAME = "config.json"
+MAC_RE = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z", re.IGNORECASE)
+PER_DEVICE_CONFIG_RE = re.compile(
+    r"config-[0-9a-f]{2}(?:-[0-9a-f]{2}){5}\.json\Z"
+)
+
+
+def configuration_summary(data):
+    """Return ``(summary, error)`` for a decoded configuration document."""
+    if not isinstance(data, dict):
+        return None, "the top-level JSON value must be an object"
+
+    connections = data.get("connections", [])
+    if not isinstance(connections, list):
+        return None, "'connections' must be an array"
+
+    hosts = []
+    for index, connection in enumerate(connections, 1):
+        if not isinstance(connection, dict):
+            return None, "connection %d must be an object" % index
+        host = connection.get("host", "")
+        if not isinstance(host, str):
+            return None, "connection %d host must be a string" % index
+        hosts.append(host or "?")
+    return ", ".join(hosts) or "no connections", None
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     root = "."
 
+    @staticmethod
+    def _decoded_url_path(path):
+        """Decode an HTTP path once, rejecting invalid UTF-8 and NUL bytes."""
+        try:
+            decoded = urllib.parse.unquote(
+                urllib.parse.urlsplit(path).path, errors="strict"
+            )
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return None if "\0" in decoded else decoded
+
+    def _path_in_root(self, decoded):
+        """Map a decoded URL path into the served tree, or return None."""
+        root = os.path.realpath(self.root)
+        clean = os.path.normpath(decoded).lstrip("/\\")
+        full = os.path.realpath(os.path.join(root, clean))
+        try:
+            if os.path.commonpath([full, root]) != root:
+                return None
+        except ValueError:              # Different drives on Windows.
+            return None
+        return full
+
     def translate_path(self, path):
         # Deliberately not using the base implementation: it resolves against
         # the process working directory, and this server is usually pointed at
         # a tree somewhere else.
-        clean = path.split("?", 1)[0].split("#", 1)[0]
-        clean = os.path.normpath(clean).lstrip("/\\")
-        full = os.path.join(self.root, clean)
-        # Refuse anything that climbs out of the served tree.
-        if os.path.commonpath([os.path.abspath(full), os.path.abspath(self.root)]) \
-                != os.path.abspath(self.root):
-            return os.path.join(self.root, "does-not-exist")
-        return full
+        decoded = self._decoded_url_path(path)
+        full = self._path_in_root(decoded) if decoded is not None else None
+        # send_head rejects invalid paths before this normally matters. Keep a
+        # harmless in-root fallback for callers of translate_path itself.
+        return full or os.path.join(os.path.realpath(self.root), ".invalid-request")
+
+    def send_head(self):
+        decoded = self._decoded_url_path(self.path)
+        if decoded is None or self._path_in_root(decoded) is None:
+            self.send_error(404, "File not found")
+            return None
+
+        name = os.path.basename(decoded)
+        if (name.casefold().startswith("config-") and
+                not getattr(self, "_serving_selected_config", False)):
+            # Overrides are selected only through /config.json plus the MAC
+            # header. Do not make them enumerable static files as well.
+            self.send_error(404, "File not found")
+            return None
+        return super().send_head()
+
+    def list_directory(self, path):
+        """Do not expose the PXE tree or its per-device configuration names."""
+        self.send_error(404, "File not found")
+        return None
+
+    def _serve_with_config_selection(self, serve):
+        """Apply the same per-device selection to GET and HEAD."""
+        original_path = self.path
+        previous_selection = getattr(self, "_serving_selected_config", False)
+        self._serving_selected_config = False
+        try:
+            requested = self._decoded_url_path(original_path)
+            if requested is not None and os.path.basename(requested) == CONFIG_NAME:
+                served = self._config_for_client(requested)
+                if served:
+                    self.path = "/" + os.path.relpath(
+                        served, os.path.realpath(self.root)
+                    ).replace(os.sep, "/")
+                    self._serving_selected_config = True
+            return serve()
+        finally:
+            self.path = original_path
+            self._serving_selected_config = previous_selection
 
     def do_GET(self):
-        requested = self.path.split("?", 1)[0].lstrip("/")
-        if os.path.basename(requested) == CONFIG_NAME:
-            served = self._config_for_client(requested)
-            if served:
-                self.path = "/" + os.path.relpath(served, self.root).replace(os.sep, "/")
-        return super().do_GET()
+        return self._serve_with_config_selection(super().do_GET)
+
+    def do_HEAD(self):
+        return self._serve_with_config_selection(super().do_HEAD)
 
     def _config_for_client(self, requested):
-        """Prefer a per-MAC file when the client identified itself."""
+        """Prefer a per-MAC file; this is selection, not authentication."""
         mac = (self.headers.get("X-ThinClient-MAC") or "").strip().lower()
-        if not re.fullmatch(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}", mac or ""):
+        if not MAC_RE.fullmatch(mac):
             return None
-        directory = os.path.dirname(os.path.join(self.root, requested))
+        requested_path = self._path_in_root(requested)
+        if requested_path is None:
+            return None
+        directory = os.path.dirname(requested_path)
         candidate = os.path.join(directory, "config-%s.json" % mac.replace(":", "-"))
         return candidate if os.path.isfile(candidate) else None
 
@@ -80,13 +169,16 @@ class Server(socketserver.ThreadingTCPServer):
 
 def local_addresses():
     addresses = []
+    sock = None
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.connect(("192.0.2.1", 9))
         addresses.append(sock.getsockname()[0])
-        sock.close()
     except OSError:
         pass
+    finally:
+        if sock is not None:
+            sock.close()
     return addresses
 
 
@@ -108,16 +200,26 @@ def main():
     if os.path.isfile(config):
         try:
             import json
-            data = json.load(open(config, encoding="utf-8"))
-            hosts = ", ".join(c.get("host", "?") for c in data.get("connections", []))
-            print("  %s -> %s" % (CONFIG_NAME, hosts or "no connections"))
+            with open(config, encoding="utf-8") as handle:
+                data = json.load(handle)
         except (OSError, ValueError) as exc:
             print("  WARNING: %s is not valid JSON (%s)" % (CONFIG_NAME, exc))
+        else:
+            summary, error = configuration_summary(data)
+            if error:
+                print("  WARNING: %s is not a valid ThinClient config (%s)" %
+                      (CONFIG_NAME, error))
+            else:
+                print("  %s -> %s" % (CONFIG_NAME, summary))
     else:
         print("  WARNING: %s is not present; clients will keep their built-in config"
               % CONFIG_NAME)
 
-    per_device = [f for f in os.listdir(root) if f.startswith("config-")]
+    per_device = [
+        filename for filename in os.listdir(root)
+        if PER_DEVICE_CONFIG_RE.fullmatch(filename) and
+        os.path.isfile(os.path.join(root, filename))
+    ]
     if per_device:
         print("  per-device overrides: %s" % ", ".join(sorted(per_device)))
 

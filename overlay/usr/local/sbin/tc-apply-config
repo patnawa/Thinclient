@@ -14,6 +14,11 @@ sys.path.insert(0, "/usr/local/lib/thinclient")
 import tcconfig  # noqa: E402
 
 XORG_LOCKDOWN = "/etc/X11/xorg.conf.d/20-thinclient-lockdown.conf"
+XKB_LAYOUT = re.compile(r"[A-Za-z0-9_+-]+(?:,[A-Za-z0-9_+-]+)*\Z")
+XKB_VARIANT = re.compile(r"[A-Za-z0-9_+-]*(?:,[A-Za-z0-9_+-]*)*\Z")
+NTP_SERVERS = re.compile(
+    r"[A-Za-z0-9._:%-]+(?:[ \t]+[A-Za-z0-9._:%-]+)*\Z"
+)
 
 
 def sh(argv, **kwargs):
@@ -30,6 +35,36 @@ def kernel_args():
             return fh.read().split()
     except OSError:
         return []
+
+
+def safe_xkb_value(value, default, variant=False):
+    """Accept only XKB identifiers safe to serialize into a shell-style file."""
+    if not isinstance(value, str):
+        return default
+    value = value.strip()
+    pattern = XKB_VARIANT if variant else XKB_LAYOUT
+    return value if pattern.fullmatch(value) else default
+
+
+def safe_ntp_servers(value):
+    """Return a timesyncd server list without allowing config-line injection."""
+    if not isinstance(value, str):
+        return ""
+    value = value.strip()
+    return value if value and NTP_SERVERS.fullmatch(value) else ""
+
+
+def timezone_path(value, root="/usr/share/zoneinfo"):
+    """Resolve a named zone beneath the zoneinfo tree, never through traversal."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    root = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(root, value.strip()))
+    try:
+        inside = os.path.commonpath([root, candidate]) == root
+    except ValueError:
+        inside = False
+    return candidate if inside and os.path.isfile(candidate) else None
 
 
 def apply_hostname(device):
@@ -66,10 +101,10 @@ def apply_hostname(device):
 
 def apply_time(device):
     timezone = device.get("timezone") or ""
-    if timezone and os.path.exists("/usr/share/zoneinfo/" + timezone):
-        sh(["timedatectl", "set-timezone", timezone])
+    if timezone_path(timezone):
+        sh(["timedatectl", "set-timezone", timezone.strip()])
 
-    ntp = (device.get("ntp_server") or "").strip()
+    ntp = safe_ntp_servers(device.get("ntp_server"))
     if ntp:
         os.makedirs("/etc/systemd/timesyncd.conf.d", exist_ok=True)
         path = "/etc/systemd/timesyncd.conf.d/20-thinclient.conf"
@@ -93,8 +128,8 @@ def apply_keyboard(device):
     Running setupcon here as well cost about half a second of every boot to
     style text consoles this image never shows.
     """
-    layout = device.get("keyboard_layout") or "us"
-    variant = device.get("keyboard_variant") or ""
+    layout = safe_xkb_value(device.get("keyboard_layout"), "us")
+    variant = safe_xkb_value(device.get("keyboard_variant"), "", variant=True)
     with open("/etc/default/keyboard", "w", encoding="utf-8") as fh:
         fh.write('XKBMODEL="pc105"\nXKBLAYOUT="%s"\nXKBVARIANT="%s"\n'
                  'XKBOPTIONS=""\nBACKSPACE="guess"\n' % (layout, variant))

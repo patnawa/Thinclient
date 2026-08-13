@@ -13,12 +13,15 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Select the artifact for the configured release explicitly. A glob sorted by
+# filename can silently boot an older ISO left in out/ after a version bump.
+source "$REPO/build/config.sh"
 MODE="${1:-bios}"
-ISO="$(ls -1 "$REPO"/out/*.iso 2>/dev/null | head -1)"
+ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
 OUT="$REPO/out/boottest-$MODE"
 MON=/tmp/tc-qemu-monitor.sock
 
-[ -n "$ISO" ] || { echo "no ISO in $REPO/out - run build.sh first"; exit 1; }
+[ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
 command -v qemu-system-x86_64 >/dev/null || { echo "install qemu-system-x86"; exit 1; }
 
 rm -rf "$OUT"; mkdir -p "$OUT"

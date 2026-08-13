@@ -6,30 +6,91 @@ set -u
 
 RUN=/run/thinclient
 MEDIA="$RUN/media"
-TMP="$RUN/save.json"
+ROOT_STATE="$RUN/.root"
+TMP=""
+MEDIA_TMP=""
 
-cat > "$TMP"
+# $RUN is group-writable by design.  A fixed root-written filename there lets
+# the kiosk user redirect `cat > file` through a symlink to any root-writable
+# path.  All scratch data therefore lives below a verified root-only directory.
+ensure_root_state() {
+    if mkdir -m 0700 "$ROOT_STATE" 2>/dev/null; then
+        :
+    elif [ -L "$ROOT_STATE" ] || [ ! -d "$ROOT_STATE" ]; then
+        echo "unsafe runtime state path: $ROOT_STATE" >&2
+        return 1
+    fi
+    [ ! -L "$ROOT_STATE" ] \
+        && [ "$(stat -c '%u:%a' "$ROOT_STATE" 2>/dev/null)" = "0:700" ] || {
+        echo "$ROOT_STATE is not a root-only directory" >&2
+        return 1
+    }
+}
+
+cleanup() {
+    [ -z "$TMP" ] || rm -f -- "$TMP"
+    [ -z "$MEDIA_TMP" ] || rm -f -- "$MEDIA_TMP"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+ensure_root_state || exit 5
+TMP="$(mktemp "$ROOT_STATE/save.XXXXXX")" || {
+    echo "could not create a private configuration file" >&2
+    exit 5
+}
+
+cat > "$TMP" || {
+    echo "could not read configuration" >&2
+    exit 2
+}
 if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$TMP" 2>/dev/null; then
     echo "refusing to save invalid JSON" >&2
-    rm -f "$TMP"; exit 2
+    exit 2
 fi
 
 DEV="$(blkid -L TCCONF 2>/dev/null || true)"
 if [ -z "$DEV" ]; then
     echo "no TCCONF partition on this device" >&2
-    rm -f "$TMP"; exit 3
+    exit 3
 fi
 
-mountpoint -q "$MEDIA" || mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null
+if mountpoint -q "$MEDIA"; then
+    mounted="$(findmnt -no SOURCE --target "$MEDIA" 2>/dev/null || true)"
+    if [ "$(readlink -f "$mounted" 2>/dev/null)" != "$(readlink -f "$DEV" 2>/dev/null)" ]; then
+        echo "$MEDIA is mounted from a different device" >&2
+        exit 4
+    fi
+elif ! mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null; then
+    echo "could not mount the TCCONF partition read-write" >&2
+    exit 4
+fi
 mount -o remount,rw "$MEDIA" 2>/dev/null || true
-if ! touch "$MEDIA/.tcwrite" 2>/dev/null; then
-    echo "TCCONF partition is read-only" >&2
-    rm -f "$TMP"; exit 4
-fi
-rm -f "$MEDIA/.tcwrite"
 
-cp "$TMP" "$MEDIA/config.json.new" && mv "$MEDIA/config.json.new" "$MEDIA/config.json"
+# Create the replacement on the TCCONF filesystem itself, validate the copied
+# bytes, then rename it over config.json.  mktemp uses O_EXCL, and rename
+# replaces a hostile destination symlink rather than following it.
+MEDIA_TMP="$(mktemp "$MEDIA/.config.json.XXXXXX")" || {
+    echo "could not create a temporary file on the TCCONF partition" >&2
+    exit 4
+}
+if ! cp -- "$TMP" "$MEDIA_TMP" || ! python3 -c \
+        'import json,sys; json.load(open(sys.argv[1]))' "$MEDIA_TMP" 2>/dev/null \
+        || ! chmod 0644 "$MEDIA_TMP" 2>/dev/null \
+        || ! mv -fT -- "$MEDIA_TMP" "$MEDIA/config.json"; then
+    echo "could not publish config.json on the TCCONF partition" >&2
+    exit 4
+fi
+MEDIA_TMP=""
 sync
-cp "$TMP" "$RUN/media-config.json"
-rm -f "$TMP"
+
+# $ROOT_STATE and $RUN are on the same tmpfs, so this is an atomic publish of a
+# root-owned, kiosk-readable layer even if media-config.json was a symlink.
+if chmod 0644 "$TMP" && mv -fT -- "$TMP" "$RUN/media-config.json"; then
+    TMP=""
+else
+    echo "warning: saved persistently but could not refresh the runtime copy" >&2
+fi
 echo "saved to $DEV"

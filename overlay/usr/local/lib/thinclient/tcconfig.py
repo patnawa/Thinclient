@@ -16,6 +16,7 @@ import collections
 import hashlib
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
@@ -101,6 +102,33 @@ CONNECTION_DEFAULTS = {
 }
 
 
+DEVICE_STRING_FIELDS = (
+    "hostname_prefix", "keyboard_layout", "keyboard_variant", "timezone",
+    "ntp_server", "resolution", "admin_password", "auto_connect",
+)
+DEVICE_BOOLEAN_FIELDS = (
+    "allow_settings", "allow_console", "allow_terminal", "session_bar", "show_ip",
+)
+CONNECTION_STRING_FIELDS = (
+    "id", "name", "host", "username", "domain", "password", "gateway",
+    "gateway_username", "gateway_domain", "app",
+)
+CONNECTION_BOOLEAN_FIELDS = (
+    "prompt_credentials", "audio_out", "audio_in", "redirect_clipboard",
+    "redirect_usb_storage", "redirect_usb_devices", "redirect_smartcard",
+    "redirect_printers", "auto_reconnect",
+)
+CONNECTION_ENUMS = {
+    "protocol": ("rdp", "vnc"),
+    "cert_policy": ("ignore", "tofu", "strict"),
+    "security": ("auto", "nla", "tls", "rdp"),
+    "gfx": ("auto", "avc444", "avc420", "rfx", "none"),
+    "network": ("auto", "lan", "broadband", "modem"),
+}
+DISPLAY_MODES = ("fullscreen", "multimon", "window")
+DISPLAY_SIZE = re.compile(r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$")
+
+
 # --------------------------------------------------------------------- load --
 def _read(path):
     try:
@@ -109,6 +137,126 @@ def _read(path):
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _string(value, default="", strip=True):
+    """Return a string value without turning arbitrary JSON types into text."""
+    if not isinstance(value, str):
+        return default
+    return value.strip() if strip else value
+
+
+def _boolean(value, default):
+    """Parse explicit JSON/shell boolean spellings; ambiguous values use default."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalised = value.strip().lower()
+        if normalised in ("true", "yes", "on", "1"):
+            return True
+        if normalised in ("false", "no", "off", "0"):
+            return False
+    return default
+
+
+def _bounded_int(value, default, minimum, maximum):
+    """Coerce integers, default malformed values and clamp numeric overflow."""
+    if isinstance(value, bool):
+        return default
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            return default
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(maximum, max(minimum, number))
+
+
+def _enum(value, default, choices):
+    value = _string(value).lower()
+    return value if value in choices else default
+
+
+def _display(value):
+    value = _string(value).lower()
+    if value in DISPLAY_MODES or DISPLAY_SIZE.fullmatch(value):
+        return value
+    return CONNECTION_DEFAULTS["display"]
+
+
+def _normalise_device(device, fallback=None):
+    """Normalize one device layer, preserving prior valid values on bad input."""
+    fallback = fallback or DEVICE_DEFAULTS
+    for key in DEVICE_STRING_FIELDS:
+        # Passwords are significant byte-for-byte; whitespace in the other
+        # fields is input decoration and is safer removed here once.
+        device[key] = _string(
+            device.get(key), fallback[key], strip=(key != "admin_password")
+        )
+    for key in DEVICE_BOOLEAN_FIELDS:
+        device[key] = _boolean(device.get(key), fallback[key])
+    device["screen_blank_minutes"] = _bounded_int(
+        device.get("screen_blank_minutes"),
+        fallback["screen_blank_minutes"], 0, 180,
+    )
+
+
+def _normalise_connection(raw):
+    conn = dict(CONNECTION_DEFAULTS)
+    conn["extra_args"] = list(CONNECTION_DEFAULTS["extra_args"])
+    conn.update(raw)
+
+    for key in CONNECTION_STRING_FIELDS:
+        conn[key] = _string(
+            conn.get(key), CONNECTION_DEFAULTS[key], strip=(key != "password")
+        )
+    for key in CONNECTION_BOOLEAN_FIELDS:
+        conn[key] = _boolean(conn.get(key), CONNECTION_DEFAULTS[key])
+    for key, choices in CONNECTION_ENUMS.items():
+        default = CONNECTION_DEFAULTS[key]
+        supplied = raw.get(key)
+        # Missing/blank retains the historical appliance default. An explicit
+        # but invalid certificate policy must fail closed: before validation
+        # existed, an unknown value emitted no /cert override and FreeRDP used
+        # normal system trust. Falling back to "ignore" here would weaken a
+        # typoed central policy into accepting every certificate.
+        if key == "cert_policy" and supplied not in (None, "") \
+                and _string(supplied).lower() not in choices:
+            default = "strict"
+        conn[key] = _enum(conn.get(key), default, choices)
+
+    conn["display"] = _display(conn.get("display"))
+    conn["port"] = _bounded_int(
+        conn.get("port"), CONNECTION_DEFAULTS["port"], 1, 65535
+    )
+    conn["reconnect_delay"] = _bounded_int(
+        conn.get("reconnect_delay"), CONNECTION_DEFAULTS["reconnect_delay"], 2, 120
+    )
+    conn["extra_args"] = [
+        arg.strip() for arg in (conn.get("extra_args") or [])
+        if isinstance(arg, str) and arg.strip()
+    ] if isinstance(conn.get("extra_args"), list) else []
+    return conn
+
+
+def _assign_connection_ids(connections):
+    """Keep the first explicit ID and give every missing/duplicate one a safe ID."""
+    reserved = {
+        conn["id"] for conn in connections if conn["id"]
+    }
+    used = set()
+    next_generated = 1
+    for conn in connections:
+        if conn["id"] and conn["id"] not in used:
+            used.add(conn["id"])
+            continue
+        while "conn%d" % next_generated in reserved | used:
+            next_generated += 1
+        conn["id"] = "conn%d" % next_generated
+        used.add(conn["id"])
+        next_generated += 1
 
 
 def load(layers=None):
@@ -121,34 +269,30 @@ def load(layers=None):
     cfg = {"schema": 1, "device": dict(DEVICE_DEFAULTS), "connections": []}
     for path in (LAYERS if layers is None else layers):
         layer = _read(path)
-        if not layer:
+        if not isinstance(layer, dict):
             continue
         if isinstance(layer.get("device"), dict):
-            cfg["device"].update(layer["device"])
+            previous = cfg["device"]
+            merged = dict(previous)
+            merged.update(layer["device"])
+            _normalise_device(merged, fallback=previous)
+            cfg["device"] = merged
         if isinstance(layer.get("connections"), list):
             cfg["connections"] = layer["connections"]
 
-    normalised = []
-    for index, raw in enumerate(cfg["connections"]):
-        if not isinstance(raw, dict):
-            continue
-        conn = dict(CONNECTION_DEFAULTS)
-        # dict() is a shallow copy, so every connection that omits extra_args
-        # would otherwise share the one list object living in the defaults.
-        conn["extra_args"] = list(CONNECTION_DEFAULTS["extra_args"])
-        conn.update(raw)
-        if not isinstance(conn.get("extra_args"), list):
-            conn["extra_args"] = []
-        if not conn["id"]:
-            conn["id"] = "conn%d" % (index + 1)
+    normalised = [
+        _normalise_connection(raw)
+        for raw in cfg["connections"] if isinstance(raw, dict)
+    ]
+    _assign_connection_ids(normalised)
+    for conn in normalised:
         if not conn["name"]:
             conn["name"] = conn["host"] or conn["id"]
-        try:
-            conn["port"] = int(conn["port"]) or 3389
-        except (TypeError, ValueError):
-            conn["port"] = 3389
-        normalised.append(conn)
     cfg["connections"] = normalised
+
+    connection_ids = {conn["id"] for conn in normalised}
+    if cfg["device"]["auto_connect"] not in connection_ids:
+        cfg["device"]["auto_connect"] = ""
     return cfg
 
 
@@ -168,6 +312,41 @@ def parse_extra_args(text):
         # Unbalanced quotes while the admin is still typing: fall back rather
         # than lose what they entered.
         return text.split()
+
+
+def format_extra_args(args):
+    """Quote an argv list for lossless display and editing in one text field."""
+    if not isinstance(args, (list, tuple)):
+        return ""
+    clean = [arg.strip() for arg in args if isinstance(arg, str) and arg.strip()]
+    return shlex.join(clean)
+
+
+def parse_nmcli_terse(line):
+    """Split one ``nmcli -t`` row, honoring its backslash escaping.
+
+    NetworkManager escapes literal colons and backslashes in terse output. A
+    normal ``split(':')`` therefore turns an SSID such as ``Cafe:5G`` into a
+    different network name and makes it impossible to join from the UI.
+    """
+    fields = []
+    current = []
+    escaped = False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    if escaped:
+        current.append("\\")
+    fields.append("".join(current))
+    return fields
 
 
 def find(cfg, conn_id):

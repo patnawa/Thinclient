@@ -1,21 +1,74 @@
-# ThinClient
+<div align="center">
 
-A small, fast Linux image that turns any x86-64 PC into an RDP thin client for
-Windows Server 2025 — the same job a Wyse 1200LE does: power on, get a
-connection list, connect, and nothing else.
+<h1>ThinClient</h1>
 
-Boots from **USB** or **PXE/netboot**. Runs entirely from RAM, so there is no
-disk to fail, no state to drift, and pulling the power is a supported shutdown.
+<p><strong>A small, immutable Debian appliance for RDP, RemoteApp, and VNC sessions.</strong></p>
 
+<p>Turn a compatible x86-64 PC into a focused endpoint that boots, presents the<br>
+approved connections, and gets out of the user's way.</p>
+
+<p>
+  <a href="build/config.sh"><img alt="Release 1.1" src="https://img.shields.io/badge/release-1.1-3478f6?style=flat-square"></a>
+  <a href="https://www.debian.org/"><img alt="Debian 13" src="https://img.shields.io/badge/Debian-13%20trixie-a81d33?style=flat-square&amp;logo=debian&amp;logoColor=white"></a>
+  <a href="https://www.freerdp.com/"><img alt="FreeRDP 3" src="https://img.shields.io/badge/FreeRDP-3-2b6cb0?style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22a06b?style=flat-square"></a>
+</p>
+
+<p>
+  <a href="#building">Build</a> ·
+  <a href="#deploying-by-usb">USB</a> ·
+  <a href="#installing-to-a-clients-internal-disk">Internal disk</a> ·
+  <a href="#deploying-by-pxe">PXE</a> ·
+  <a href="#configuration">Configure</a> ·
+  <a href="#troubleshooting">Troubleshoot</a>
+</p>
+
+</div>
+
+![ThinClient connection manager showing RDP and RemoteApp entries](docs/images/connection-manager.png)
+
+<p align="center"><sub>The connection manager from the verified 1.1 build.</sub></p>
+
+ThinClient boots from USB, an internal disk, or PXE. Its operating system lives
+in a read-only squashfs with ephemeral runtime state, so a fleet returns to the
+same known image at every boot. Configuration can be local, stored on a small
+`TCCONF` partition, or delivered centrally over the network.
+
+```text
+power on ──▶ BIOS / UEFI / Secure Boot ──▶ connection manager ──▶ RDP or VNC
+                                                    ▲                  │
+                                                    └── session ends ──┘
 ```
-power on ──▶ kernel + squashfs ──▶ connection manager ──▶ full-screen RDP session
-                                          ▲                        │
-                                          └──── session ends ──────┘
+
+## Why use it?
+
+| Capability | What you get |
+|---|---|
+| Appliance experience | Full-screen GTK connection picker with optional kiosk auto-connect; no desktop shell or application menu. |
+| Windows-ready sessions | FreeRDP 3, RemoteApp, RD Gateway, NLA/TLS, Kerberos preparation, multi-monitor, dynamic resolution, and reconnect policy. |
+| Device redirection | Audio output, microphone, clipboard, printers, smart cards, USB storage, and optional raw USB redirection. |
+| Flexible deployment | One hybrid image for legacy BIOS, UEFI, and Secure Boot; install locally or boot a diskless fleet over PXE. |
+| Central management | Layered JSON configuration from the image, `TCCONF`, kernel/DHCP URL, and per-boot local edits. |
+| Guard rails | Unprivileged kiosk account, administrator-gated tools, validated installer targets, atomic privileged writes, and fail-closed configuration handling. |
+| Release verification | Unit, permission, RDP, GTK, BIOS, UEFI, Secure Boot, shutdown, installer, and PXE tests run against the built image. |
+
+## Quick start
+
+On Debian or Ubuntu (including Debian under WSL2):
+
+```bash
+git clone https://github.com/patnawa/Thinclient.git
+cd Thinclient
+sudo bash build/build.sh
+sudo bash build/verify-all.sh
 ```
 
----
+The result is `out/thinclient-amd64-1.1.iso`. See [Building](#building) for host
+prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
+[internal disk](#installing-to-a-clients-internal-disk), or
+[PXE](#deploying-by-pxe) deployment.
 
-## Contents
+## Repository layout
 
 | Path | What it is |
 |---|---|
@@ -43,6 +96,16 @@ power on ──▶ kernel + squashfs ──▶ connection manager ──▶ full
 Nothing else is installed. No browser, no file manager, no desktop menu — the
 Openbox right-click menu is deliberately empty so there is no way out of the
 appliance.
+
+<details>
+<summary><strong>Settings UI</strong></summary>
+
+![ThinClient connection settings](docs/images/settings.png)
+
+Connections, display, redirection, certificate, device, and diagnostic options
+are editable from the administrator-gated interface.
+
+</details>
 
 ---
 
@@ -120,7 +183,7 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.0.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.1.iso     hybrid ISO: burn it, or dd it to a USB stick
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -134,8 +197,8 @@ out/
 
 ### Verifying a build
 
-Four checks, each usable on its own. All of them run on the build host — no
-client hardware needed.
+The release verifier runs the checks below in failure-cost order. Each check is
+also usable on its own, and none requires client hardware.
 
 ```bash
 sudo bash build/verify-all.sh        # everything below, cheapest failures first
@@ -153,7 +216,9 @@ Or individually:
 | `sudo bash build/rdpsession-test.sh` | A real RDP session, client taken from the image |
 | `sudo bash build/uitest.sh out/ui.png [settings]` | The GTK screens render |
 | `sudo bash build/boottest.sh bios\|uefi\|secureboot\|debug` | Boots in QEMU, timed screenshots |
-| `sudo bash build/shutdowntest.sh 5` | Drives the Shut Down button and checks the machine really powers off |
+| `sudo bash build/shutdowntest.sh` | Drives the Shut Down button and checks the machine really powers off |
+| `sudo bash build/installtest.sh bios\|uefi` | Installs to a blank virtual disk, removes the ISO, and boots the installed system |
+| `sudo bash build/pxetest.sh bios\|uefi` | PXE-boots a diskless client and proves squashfs plus central config were fetched |
 | `python3 test/probe_rdp_server.py <host>` | What security protocol your RDP server demands (no logon attempted) |
 
 Two of these earn their keep:
@@ -174,14 +239,20 @@ the slowest units, the active X driver and any errors.
 
 ### Unit tests
 
-`tests/` covers the configuration core with stdlib `unittest` — no dependencies,
-so the same tests run on the build host or on a client. `build/unittest.sh` runs
-them **inside the built image**, against the real `tcconfig.py` and the real
-FreeRDP binary that shipped, so a test can never pass against a module the
-client does not actually have.
+`tests/` uses stdlib `unittest` to cover the configuration core, session retry
+policy, protocol probe, installer validation, privileged config input, and the
+deployment server. `build/unittest.sh` runs the complete suite **inside the
+built image**, against its real GTK, `tcconfig.py`, helpers, FreeRDP binary, and
+a synchronized copy of the host-side deployment server. On a host without GTK,
+only the manager-state cases report an explicit dependency skip.
 
-They are written at four agreed seams, and each one exists because that
-behaviour is easy to get quietly wrong:
+From a source checkout, run the host-side suite directly:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The suite concentrates on seams where a quiet regression is costly:
 
 | Seam | Why it is tested |
 |---|---|
@@ -189,6 +260,9 @@ behaviour is easy to get quietly wrong:
 | `explain_failure()` | Decides both what the user reads and whether the client auto-reconnects. |
 | `load()` | Four-layer precedence. Takes an optional `layers=` so the merge rules can be exercised against known files instead of a client's `/etc`. |
 | `probe_rdp_server.connection_request()` | A byte-exact protocol packet, asserted against MS-RDPBCGR rather than against the code that builds it. |
+| privileged helpers and installer validation | Malformed input, unsafe disk targets, and root-written runtime files are rejected before they can alter the system. |
+| manager reload/retry state | Late configuration, stale reconnect timers, and rejected credentials do not trap a kiosk in the wrong session. |
+| `tc-config-server.py` routing | Per-device selection, GET/HEAD consistency, traversal protection, and non-enumerability are exercised over HTTP. |
 
 Expected values come from an independent source of truth — the protocol
 specification, or a command line verified against the FreeRDP binary — never
@@ -234,7 +308,7 @@ mode** when prompted. So does Ventoy if you keep several images on one stick.
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.0.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.1.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -451,6 +525,11 @@ config-aa-bb-cc-dd-ee-ff.json
 exists it goes to that one device and everyone else gets `config.json`. Nothing
 has to be generated per client, and nothing has to know in advance which clients
 exist.
+
+The MAC header selects a file; it is not authentication. The bundled server
+disables directory listings and direct `config-<mac>.json` downloads, but a
+client can still claim another MAC. Do not put shared secrets in per-device
+files unless the server is placed behind real HTTPS authentication.
 
 **PXE clients pull central configuration automatically** — the generated boot
 files already carry `tc.config=http://<server>/config.json`, so a netbooted
@@ -752,8 +831,11 @@ Worth knowing before this goes on a network:
 - **Stored passwords are stored in plain text** in `config.json`. If you fill in
   `password`, treat the TCCONF partition and the central config URL as secrets.
   Leaving it empty and letting users type their own is the safer default.
+- **Per-device MAC selection is not access control.** MAC addresses are easy to
+  spoof; use an authenticated HTTPS front end if central files contain secrets.
 - **The admin password is salted and hashed** (SHA-256), and only gates the UI —
   it is not a security boundary against someone with physical access and a USB
   stick.
-- The kiosk user is unprivileged, has no shell access from the UI, and `sudo` is
-  limited to reboot, poweroff, `nmcli`, and the three `tc-*` config helpers.
+- The kiosk user is unprivileged. The admin prompt gates Settings, Network, and
+  Terminal in the UI; `sudo` is limited to the appliance's power, network,
+  configuration, smart-card, and validated installer commands.

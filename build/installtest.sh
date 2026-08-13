@@ -10,15 +10,16 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+source "$REPO/build/config.sh"
 MODE="${1:-bios}"
-ISO="$(ls -1 "$REPO"/out/*.iso 2>/dev/null | head -1)"
+ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
 KERNEL="$REPO/out/pxe/thinclient/vmlinuz"
 INITRD="$REPO/out/pxe/thinclient/initrd.img"
 OUT="$REPO/out/installtest-$MODE"
 DISK="$OUT/target.qcow2"
 MON=/tmp/tc-install-monitor.sock
 
-[ -n "$ISO" ] || { echo "no ISO in $REPO/out"; exit 1; }
+[ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
 [ -f "$KERNEL" ] && [ -f "$INITRD" ] || { echo "run build.sh first"; exit 1; }
 
 rm -rf "$OUT"; mkdir -p "$OUT"; rm -f "$MON"

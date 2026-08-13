@@ -20,7 +20,7 @@ done
 sed 's/\r$//' "$REPO/overlay/etc/thinclient/config.json" > /etc/thinclient/config.json
 cat > /etc/thinclient/build-info <<'EOF'
 name=ThinClient
-version=1.0
+version=1.1
 base=Debian trixie
 freerdp=3.15.0+dfsg-2.1
 kernel=6.12.101-1

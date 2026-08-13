@@ -11,11 +11,17 @@ build_command computes them, or the test could never disagree with the code.
 
 import json
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
+# The image installs this module under /usr/local. From a source checkout, use
+# the exact overlay file that the build copies into the image.
+repo_module_dir = Path(__file__).resolve().parents[1] / "overlay/usr/local/lib/thinclient"
+sys.path.insert(0, str(repo_module_dir if repo_module_dir.is_dir()
+                       else "/usr/local/lib/thinclient"))
 import tcconfig  # noqa: E402
 
 
@@ -49,9 +55,10 @@ class TargetAddress(unittest.TestCase):
         #   "Command line parsing failed at 'v' value '2001:db8::1'"
         # because it cannot tell the address colons from the port separator.
         # Brackets are the documented form and the binary accepts them.
-        argv, _ = tcconfig.build_command(
-            connection(host="2001:db8::1"), {"keyboard_layout": ""}
-        )
+        with mock.patch.object(tcconfig, "freerdp_binary", return_value="xfreerdp3"):
+            argv, _ = tcconfig.build_command(
+                connection(host="2001:db8::1"), {"keyboard_layout": ""}
+            )
         self.assertEqual("/v:[2001:db8::1]", target_of(argv))
 
 
@@ -96,10 +103,11 @@ class VncConnections(unittest.TestCase):
     def test_a_vnc_connection_launches_the_vnc_viewer_on_the_right_port(self):
         # TigerVNC's own usage says "[host][::port]" - a single colon means a
         # display number, so 10.0.0.5:5901 would be display 5901, not port 5901.
-        argv, _ = tcconfig.build_command(
-            connection(protocol="vnc", host="10.0.0.5", port=5901),
-            {"keyboard_layout": ""},
-        )
+        with mock.patch.object(tcconfig, "vnc_binary", return_value="xtigervncviewer"):
+            argv, _ = tcconfig.build_command(
+                connection(protocol="vnc", host="10.0.0.5", port=5901),
+                {"keyboard_layout": ""},
+            )
 
         self.assertIn("vncviewer", argv[0])
         self.assertIn("10.0.0.5::5901", argv)
@@ -118,11 +126,13 @@ class StdinCredentials(unittest.TestCase):
         # and no explanation. Verified against the shipped FreeRDP: with a
         # leading blank line the connection reaches the server and the
         # credentials are properly evaluated.
-        argv, stdin_text = tcconfig.build_command(
-            connection(username="msc", domain=""),
-            {"keyboard_layout": ""},
-            password="secret",
-        )
+        with mock.patch.object(tcconfig, "freerdp_binary", return_value="xfreerdp3"), \
+                mock.patch.object(tcconfig, "supports_stdin_credentials", return_value=True):
+            argv, stdin_text = tcconfig.build_command(
+                connection(username="msc", domain=""),
+                {"keyboard_layout": ""},
+                password="secret",
+            )
 
         self.assertIn("/from-stdin", argv)
         self.assertEqual("\nsecret\n", stdin_text)

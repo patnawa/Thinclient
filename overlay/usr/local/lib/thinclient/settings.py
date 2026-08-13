@@ -262,7 +262,9 @@ class SettingsDialog(Gtk.Dialog):
         self.f["gateway_domain"].set_text(conn.get("gateway_domain", ""))
         self.f["app"].set_text(conn.get("app", ""))
         self.f["reconnect_delay"].set_value(int(conn.get("reconnect_delay", 5)))
-        self.f["extra_args"].set_text(" ".join(conn.get("extra_args") or []))
+        self.f["extra_args"].set_text(
+            tcconfig.format_extra_args(conn.get("extra_args") or [])
+        )
 
         display = (conn.get("display") or "fullscreen").lower()
         if display in ("fullscreen", "multimon", "window"):
@@ -541,12 +543,13 @@ class NetworkDialog(Gtk.Dialog):
             capture_output=True, text=True, timeout=15,
         )
         lines = []
-        self.devices = []
+        self.wired_devices = []
         for row in result.stdout.strip().splitlines():
-            parts = row.split(":")
+            parts = tcconfig.parse_nmcli_terse(row)
             if len(parts) < 4 or parts[1] in ("loopback", "lo"):
                 continue
-            self.devices.append(parts[0])
+            if parts[1] == "ethernet":
+                self.wired_devices.append(parts[0])
             addr = subprocess.run(
                 ["nmcli", "-g", "IP4.ADDRESS,IP4.GATEWAY", "device", "show", parts[0]],
                 capture_output=True, text=True, timeout=15,
@@ -558,11 +561,11 @@ class NetworkDialog(Gtk.Dialog):
         if hasattr(self, "wired_device"):
             active = self.wired_device.get_active_text()
             self.wired_device.remove_all()
-            for device in self.devices:
+            for device in self.wired_devices:
                 self.wired_device.append_text(device)
-            if active in self.devices:
-                self.wired_device.set_active(self.devices.index(active))
-            elif self.devices:
+            if active in self.wired_devices:
+                self.wired_device.set_active(self.wired_devices.index(active))
+            elif self.wired_devices:
                 self.wired_device.set_active(0)
 
     def _wired_page(self):
@@ -591,16 +594,25 @@ class NetworkDialog(Gtk.Dialog):
         device = self.wired_device.get_active_text()
         if not device:
             return
-        name = subprocess.run(
+        raw_name = subprocess.run(
             ["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", device],
             capture_output=True, text=True, timeout=15,
         ).stdout.strip()
+        name_fields = tcconfig.parse_nmcli_terse(raw_name)
+        name = name_fields[0] if name_fields else ""
         if not name or name == "--":
-            self._nmcli("device", "connect", device)
-            name = subprocess.run(
+            connected = self._nmcli("device", "connect", device)
+            if connected.returncode != 0:
+                self.message.set_text(
+                    connected.stderr.strip() or "Could not connect the interface."
+                )
+                return
+            raw_name = subprocess.run(
                 ["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", device],
                 capture_output=True, text=True, timeout=15,
             ).stdout.strip()
+            name_fields = tcconfig.parse_nmcli_terse(raw_name)
+            name = name_fields[0] if name_fields else ""
         if not name or name == "--":
             self.message.set_text("No NetworkManager profile is bound to %s." % device)
             return
@@ -622,7 +634,12 @@ class NetworkDialog(Gtk.Dialog):
         if result.returncode != 0:
             self.message.set_text(result.stderr.strip() or "Could not apply the settings.")
             return
-        self._nmcli("connection", "up", name)
+        activated = self._nmcli("connection", "up", name)
+        if activated.returncode != 0:
+            self.message.set_text(
+                activated.stderr.strip() or "The profile was saved but could not be activated."
+            )
+            return
         self.message.set_text("Applied to %s." % name)
         GLib.timeout_add_seconds(2, lambda: (self.refresh(), False)[1])
 
@@ -656,7 +673,8 @@ class NetworkDialog(Gtk.Dialog):
         self.ssid.remove_all()
         seen = set()
         for line in result.stdout.strip().splitlines():
-            name = line.split(":")[0]
+            fields = tcconfig.parse_nmcli_terse(line)
+            name = fields[0] if fields else ""
             if name and name not in seen:
                 seen.add(name)
                 self.ssid.append_text(name)

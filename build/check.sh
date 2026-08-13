@@ -34,7 +34,8 @@ echo "python:"
 for f in overlay/usr/local/lib/thinclient/*.py \
          overlay/usr/local/sbin/tc-apply-config \
          overlay/usr/local/sbin/tc-install \
-         overlay/usr/local/bin/tc-connect; do
+         overlay/usr/local/bin/tc-connect \
+         test/*.py tests/*.py tools/*.py; do
   [ -f "$f" ] || { echo "  MISS  $f"; fail=1; continue; }
   name=$(basename "$f" | tr -c 'A-Za-z0-9' '_')
   sed 's/\r$//' "$f" > "$tmp/$name.py"

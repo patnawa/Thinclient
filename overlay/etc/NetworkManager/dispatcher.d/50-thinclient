@@ -10,14 +10,40 @@ case "$ACTION" in
 esac
 
 [ "$IFACE" = "lo" ] && exit 0
-mkdir -p /run/thinclient
+RUN=/run/thinclient
+ROOT_STATE="$RUN/.root"
+mkdir -p "$RUN"
+
+# /run/thinclient is writable by the kiosk account.  Stage the DHCP value in a
+# private directory and rename it into place so a pre-created symlink cannot
+# redirect this root-run dispatcher into overwriting another file.
+ensure_root_state() {
+    if mkdir -m 0700 "$ROOT_STATE" 2>/dev/null; then
+        :
+    elif [ -L "$ROOT_STATE" ] || [ ! -d "$ROOT_STATE" ]; then
+        return 1
+    fi
+    [ ! -L "$ROOT_STATE" ] \
+        && [ "$(stat -c '%u:%a' "$ROOT_STATE" 2>/dev/null)" = "0:700" ]
+}
 
 # DHCP option 224 carries the configuration URL, the same idea as a Wyse unit
 # being pointed at its wnos.ini by the DHCP server.
 for candidate in "${DHCP4_PRIVATE_224:-}" "${DHCP4_OPTION_224:-}" "${DHCP4_TC_CONFIG:-}"; do
     case "$candidate" in
         http://*|https://*)
-            printf '%s' "$candidate" > /run/thinclient/dhcp-config-url
+            if ensure_root_state; then
+                TMP="$(mktemp "$ROOT_STATE/dhcp-config-url.XXXXXX")" || TMP=""
+                if [ -n "$TMP" ]; then
+                    if printf '%s' "$candidate" > "$TMP" && chmod 0644 "$TMP" \
+                            && mv -fT -- "$TMP" "$RUN/dhcp-config-url"; then
+                        TMP=""
+                    fi
+                    [ -z "$TMP" ] || rm -f -- "$TMP"
+                fi
+            else
+                echo "thinclient dispatcher: unsafe $ROOT_STATE; DHCP config URL ignored" >&2
+            fi
             break
             ;;
     esac

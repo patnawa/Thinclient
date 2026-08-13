@@ -123,9 +123,18 @@ if (-not $PSCmdlet.ShouldProcess("disk $DiskNumber ($($target.Model))", "OVERWRI
 # -------------------------------------------------------------------- write --
 # Taking the disk offline releases the volume locks that would otherwise make
 # Windows refuse or silently corrupt a raw write.
-Write-Host "taking disk $DiskNumber offline"
-Set-Disk -Number $DiskNumber -IsOffline $true
-try { Set-Disk -Number $DiskNumber -IsReadOnly $false } catch {}
+$originalDisk = Get-Disk -Number $DiskNumber
+$originalOffline = [bool]$originalDisk.IsOffline
+$originalReadOnly = [bool]$originalDisk.IsReadOnly
+$source = $null
+$dest = $null
+$check = $null
+$sha = $null
+
+try {
+    Write-Host "taking disk $DiskNumber offline"
+    Set-Disk -Number $DiskNumber -IsOffline $true
+    try { Set-Disk -Number $DiskNumber -IsReadOnly $false } catch {}
 
 $sector = 512
 $bufferSize = 4MB
@@ -200,8 +209,7 @@ if (-not $SkipVerify) {
         Write-Host "VERIFY FAILED - the stick does not match the ISO" -ForegroundColor Red
         Write-Host "  iso  $($isoHash.ToLower())"
         Write-Host "  disk $diskHash"
-        Set-Disk -Number $DiskNumber -IsOffline $false -ErrorAction SilentlyContinue
-        exit 1
+        throw "Verification failed: disk $DiskNumber does not match $($iso.Name)."
     }
 }
 
@@ -210,8 +218,9 @@ Start-Sleep -Seconds 3
 
 # ------------------------------------------------- persistence partition -----
 # The ISO occupies a few hundred MB of a multi-GB stick. A FAT32 partition
-# labelled TCCONF in the remainder is what makes Settings survive a reboot, and
-# because it is FAT32 you can edit config.json on it from Windows.
+# labelled TCCONF in the free space is what makes Settings survive a reboot,
+# and because it is FAT32 you can edit config.json on it from Windows. It is
+# capped below Windows' FAT32 formatting limit on large sticks.
 if (-not $NoPersistence) {
     Write-Host ""
     Write-Host "creating the TCCONF persistence partition"
@@ -225,7 +234,18 @@ if (-not $NoPersistence) {
             throw "only $([math]::Round($freeBytes/1MB)) MB free - too small to be useful"
         }
 
-        $part = New-Partition -DiskNumber $DiskNumber -UseMaximumSize -AssignDriveLetter
+        # Windows' built-in formatter refuses FAT32 volumes above roughly
+        # 32 GB. Configuration needs very little space, so cap the partition
+        # instead of making persistence fail on common 64/128 GB sticks.
+        $maxFat32Bytes = 31GB
+        if ($freeBytes -gt $maxFat32Bytes) {
+            $part = New-Partition -DiskNumber $DiskNumber -Size $maxFat32Bytes `
+                        -AssignDriveLetter
+        }
+        else {
+            $part = New-Partition -DiskNumber $DiskNumber -UseMaximumSize `
+                        -AssignDriveLetter
+        }
         Start-Sleep -Seconds 2
         Format-Volume -Partition $part -FileSystem FAT32 -NewFileSystemLabel TCCONF `
             -Confirm:$false -Force | Out-Null
@@ -268,3 +288,18 @@ Write-Host ""
 Write-Host "Done. Boot the target PC from this stick." -ForegroundColor Cyan
 Write-Host "Windows may offer to format the boot partition - always say no; that layout"
 Write-Host "is Linux, not NTFS. Only the TCCONF volume is meant to be readable here."
+}
+finally {
+    # FileStream construction itself can fail, before the narrower cleanup
+    # blocks above are entered. Dispose defensively, then always restore the
+    # physical disk state recorded before the destructive workflow began.
+    if ($check) { $check.Dispose() }
+    if ($sha) { $sha.Dispose() }
+    if ($dest) { $dest.Dispose() }
+    if ($source) { $source.Dispose() }
+    Write-Progress -Activity "Writing" -Completed
+
+    Set-Disk -Number $DiskNumber -IsOffline $false -ErrorAction SilentlyContinue
+    Set-Disk -Number $DiskNumber -IsReadOnly $originalReadOnly -ErrorAction SilentlyContinue
+    Set-Disk -Number $DiskNumber -IsOffline $originalOffline -ErrorAction SilentlyContinue
+}

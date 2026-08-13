@@ -5,6 +5,7 @@ set -u
 
 RUN=/run/thinclient
 MEDIA="$RUN/media"
+ROOT_STATE="$RUN/.root"
 mkdir -p "$RUN" "$MEDIA" /media/tc
 
 # The connection manager runs as "thin" and writes its working configuration and
@@ -12,6 +13,40 @@ mkdir -p "$RUN" "$MEDIA" /media/tc
 # case this script created the directory first.
 chgrp thin "$RUN" 2>/dev/null || true
 chmod 1775 "$RUN" 2>/dev/null || true
+
+# Never put privileged scratch files directly in $RUN: that directory is
+# intentionally writable by the kiosk user.  In particular, curl and cp follow
+# a pre-existing symlink when opening an output path.  Create the private
+# directory once as root and refuse to use anything with surprising ownership
+# or permissions; mktemp then gives every download/copy an exclusive name.
+ensure_root_state() {
+    if mkdir -m 0700 "$ROOT_STATE" 2>/dev/null; then
+        :
+    elif [ -L "$ROOT_STATE" ] || [ ! -d "$ROOT_STATE" ]; then
+        echo "tc-fetch-config: unsafe $ROOT_STATE; configuration fetch skipped" >&2
+        return 1
+    fi
+    [ ! -L "$ROOT_STATE" ] \
+        && [ "$(stat -c '%u:%a' "$ROOT_STATE" 2>/dev/null)" = "0:700" ] || {
+        echo "tc-fetch-config: $ROOT_STATE is not a root-only directory; configuration fetch skipped" >&2
+        return 1
+    }
+}
+
+if ! ensure_root_state; then
+    # Configuration fetching is deliberately non-fatal: the factory settings
+    # still let the connection manager start.
+    exit 0
+fi
+
+TMP=""
+cleanup() {
+    [ -z "$TMP" ] || rm -f -- "$TMP"
+}
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 valid_json() {
     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if isinstance(d,dict) else 1)' "$1" 2>/dev/null
@@ -32,9 +67,17 @@ if [ -n "$DEV" ]; then
         || echo "tc-fetch-config: could not mount $DEV" >&2
     for candidate in "$MEDIA/config.json" "$MEDIA/thinclient/config.json"; do
         if [ -f "$candidate" ] && valid_json "$candidate"; then
-            cp "$candidate" "$RUN/media-config.json"
-            echo "tc-fetch-config: loaded $candidate"
-            break
+            TMP="$(mktemp "$ROOT_STATE/media-config.XXXXXX")" || continue
+            if cp -- "$candidate" "$TMP" && valid_json "$TMP" \
+                    && chmod 0644 "$TMP" \
+                    && mv -fT -- "$TMP" "$RUN/media-config.json"; then
+                TMP=""
+                echo "tc-fetch-config: loaded $candidate"
+                break
+            fi
+            echo "tc-fetch-config: could not publish $candidate" >&2
+            rm -f -- "$TMP"
+            TMP=""
         fi
     done
     # Drop-in CA certificates let 'strict' certificate checking work on a LAN
@@ -48,28 +91,42 @@ fi
 # --- 2. central configuration over HTTP -------------------------------------
 # Priority: kernel cmdline, then whatever the DHCP dispatcher recorded.
 URL="$(kernel_arg tc.config || true)"
-if [ -z "${URL:-}" ] && [ -f "$RUN/dhcp-config-url" ]; then
+if [ -z "${URL:-}" ] && [ -f "$RUN/dhcp-config-url" ] \
+        && [ ! -L "$RUN/dhcp-config-url" ] \
+        && [ "$(stat -c %u "$RUN/dhcp-config-url" 2>/dev/null)" = "0" ]; then
     URL="$(cat "$RUN/dhcp-config-url")"
 fi
 
-if [ -n "${URL:-}" ]; then
+case "${URL:-}" in
+http://*|https://*)
     # The MAC lets one URL serve per-device files, the way a Wyse unit pulls
     # wnos.ini:  http://server/tc/config.json?mac=aa:bb:cc:dd:ee:ff
     MAC="$(cat /sys/class/net/*/address 2>/dev/null | grep -v '^00:00:00:00:00:00$' | head -1)"
+    TMP="$(mktemp "$ROOT_STATE/remote-config.XXXXXX")" || {
+        echo "tc-fetch-config: could not create a private download file" >&2
+        exit 0
+    }
     if curl -fsS --retry 4 --retry-delay 2 --retry-connrefused --max-time 25 \
             -H "X-ThinClient-MAC: ${MAC:-unknown}" \
-            -o "$RUN/remote-config.json.tmp" "$URL"; then
-        if valid_json "$RUN/remote-config.json.tmp"; then
-            mv "$RUN/remote-config.json.tmp" "$RUN/remote-config.json"
+            -o "$TMP" "$URL"; then
+        if valid_json "$TMP" && chmod 0644 "$TMP" \
+                && mv -fT -- "$TMP" "$RUN/remote-config.json"; then
+            TMP=""
             echo "tc-fetch-config: loaded $URL"
         else
             echo "tc-fetch-config: $URL did not return valid JSON" >&2
-            rm -f "$RUN/remote-config.json.tmp"
+            rm -f -- "$TMP"
+            TMP=""
         fi
     else
         echo "tc-fetch-config: could not fetch $URL" >&2
-        rm -f "$RUN/remote-config.json.tmp"
+        rm -f -- "$TMP"
+        TMP=""
     fi
-fi
+    ;;
+?*)
+    echo "tc-fetch-config: ignoring unsupported configuration URL" >&2
+    ;;
+esac
 
 exit 0

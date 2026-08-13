@@ -173,6 +173,10 @@ class ThinClient(Gtk.Window):
         self.session_active = False
         self.cancel_reconnect = False
         self._countdown_id = None
+        self._countdown_dialog = None
+        self._auto_connect_id = None
+        self.reload_pending = False
+        self.session_credentials = {}
 
         self.get_style_context().add_class("tc-root")
         self.set_default_size(900, 640)
@@ -288,11 +292,43 @@ class ThinClient(Gtk.Window):
     def reload_config(self):
         """Re-read every layer. Called on SIGHUP when central config arrives."""
         if self.session_active:
+            # The dispatcher sends one notification. Remember it so a central
+            # update received behind a full-screen session is not lost forever.
+            self.reload_pending = True
             return True
+        # A SIGHUP can arrive while the disconnect dialog is counting down.
+        # Close that old path before loading: otherwise it would reconnect to
+        # the stale server object even though the list now shows new settings.
+        if self._countdown_id:
+            GLib.source_remove(self._countdown_id)
+            self._countdown_id = None
+        if self._countdown_dialog:
+            self._countdown_dialog.response(Gtk.ResponseType.CANCEL)
         self.cfg = tcconfig.load()
+        self.session_credentials.clear()
         self.refresh_list()
         self.set_status("Configuration updated.")
+        self.schedule_auto_connect()
         return True
+
+    def schedule_auto_connect(self, delay_ms=600):
+        """Apply kiosk auto-connect at startup and after late central config."""
+        if self._auto_connect_id:
+            GLib.source_remove(self._auto_connect_id)
+            self._auto_connect_id = None
+        auto = self.cfg["device"].get("auto_connect", "")
+        if not auto or self.session_active or self._countdown_id:
+            return
+
+        def launch():
+            self._auto_connect_id = None
+            if not self.session_active:
+                conn = tcconfig.find(self.cfg, auto)
+                if conn:
+                    self.start_session(conn)
+            return False
+
+        self._auto_connect_id = GLib.timeout_add(delay_ms, launch)
 
     def refresh_status(self):
         host = socket.gethostname()
@@ -315,6 +351,9 @@ class ThinClient(Gtk.Window):
     def start_session(self, conn=None):
         if self.session_active:
             return
+        if self._auto_connect_id:
+            GLib.source_remove(self._auto_connect_id)
+            self._auto_connect_id = None
         conn = conn or self.selected_connection()
         if conn is None:
             self.set_status("Select a connection first.", bad=True)
@@ -323,11 +362,15 @@ class ThinClient(Gtk.Window):
             self.set_status("This connection has no server address.", bad=True)
             return
 
-        password = conn.get("password", "")
         # VNC has no domain login and classic VNC auth has no username at all,
         # so there is nothing for our credential dialog to collect - the viewer
         # asks for the password itself.
         is_vnc = (conn.get("protocol") or "rdp").lower() == "vnc"
+        transient = self.session_credentials.get(conn["id"]) if not is_vnc else None
+        if transient:
+            conn = dict(conn)
+            conn.update(transient)
+        password = conn.get("password", "")
         needs_prompt = (not is_vnc) and conn.get("prompt_credentials", True) and (
             not conn.get("username") or not password
         )
@@ -341,14 +384,16 @@ class ThinClient(Gtk.Window):
             conn = dict(conn)
             conn["username"], conn["domain"] = user, domain
             # Keep it on this in-memory copy so an auto-reconnect does not stop
-            # to ask again. It is only written to disk if "remember" was ticked.
+            # to ask again. The optional session cache below is deliberately
+            # separate from cfg and therefore can never be written to disk.
             conn["password"] = password
             if remember:
-                stored = tcconfig.find(self.cfg, conn["id"])
-                if stored:
-                    stored["username"], stored["domain"] = user, domain
-                    stored["password"] = password
-                self.refresh_list()
+                # Keep the promise made by the checkbox: these credentials
+                # must never become part of cfg, because a later unrelated
+                # Settings save serializes cfg to persistent media.
+                self.session_credentials[conn["id"]] = {
+                    "username": user, "domain": domain, "password": password,
+                }
 
         # Belt and braces: a stored configuration with a username but no
         # password reaches here without the dialog ever being shown.
@@ -408,7 +453,10 @@ class ThinClient(Gtk.Window):
                     except OSError:
                         pass
                     finally:
-                        proc.stdin.close()
+                        try:
+                            proc.stdin.close()
+                        except OSError:
+                            pass
 
                 # A full-screen session hides everything, so give the user a
                 # visible way back. The bar floats above the session and exits
@@ -445,6 +493,10 @@ class ThinClient(Gtk.Window):
     def _session_done(self, conn, code, error):
         self.session_active = False
         self.connect_btn.set_sensitive(True)
+        config_changed = self.reload_pending
+        if config_changed:
+            self.reload_pending = False
+            self.reload_config()
         self.show_all()
         self.present()
 
@@ -457,8 +509,12 @@ class ThinClient(Gtk.Window):
 
         failure = tcconfig.explain_failure(SESSION_LOG, code)
         self.set_status("%s — %s" % (conn["name"], failure.message), bad=True)
+        if not failure.retryable:
+            # A remembered typo must not trap the user in repeated silent
+            # failures. The next manual attempt should show the prompt again.
+            self.session_credentials.pop(conn["id"], None)
 
-        if conn.get("auto_reconnect") and failure.retryable \
+        if not config_changed and conn.get("auto_reconnect") and failure.retryable \
                 and not self.cancel_reconnect and not self._countdown_id:
             self._reconnect_countdown(conn, max(2, int(conn.get("reconnect_delay", 5))))
         return False
@@ -487,11 +543,15 @@ class ThinClient(Gtk.Window):
 
         update()
         self._countdown_id = GLib.timeout_add_seconds(1, update)
-        response = dialog.run()
-        if self._countdown_id:
-            GLib.source_remove(self._countdown_id)
-            self._countdown_id = None
-        dialog.destroy()
+        self._countdown_dialog = dialog
+        try:
+            response = dialog.run()
+        finally:
+            if self._countdown_id:
+                GLib.source_remove(self._countdown_id)
+                self._countdown_id = None
+            self._countdown_dialog = None
+            dialog.destroy()
 
         if response == Gtk.ResponseType.OK:
             self.start_session(conn)
@@ -545,6 +605,7 @@ class ThinClient(Gtk.Window):
         # storage is a separate question, and a storage failure must never make
         # an edit look like it was ignored.
         self.cfg = result
+        self.session_credentials.clear()
         self.refresh_list()
 
         ok, message = tcconfig.save(self.cfg)
@@ -589,6 +650,8 @@ class ThinClient(Gtk.Window):
 
     def on_network(self, *_):
         try:
+            if not self.authorised():
+                return
             from settings import NetworkDialog       # noqa: WPS433
             dialog = NetworkDialog(self)
             dialog.run()
@@ -660,8 +723,7 @@ class ThinClient(Gtk.Window):
                 return True
             return False
         if key == "F5":
-            self.cfg = tcconfig.load()
-            self.refresh_list()
+            self.reload_config()
             self.set_status("Configuration reloaded.")
             return True
         if ctrl_alt and key in ("F12", "s", "S"):
@@ -686,11 +748,7 @@ def main():
     # central configuration has been fetched.
     GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGHUP, window.reload_config)
 
-    auto = window.cfg["device"].get("auto_connect", "")
-    if auto:
-        conn = tcconfig.find(window.cfg, auto)
-        if conn:
-            GLib.timeout_add(600, lambda: (window.start_session(conn), False)[1])
+    window.schedule_auto_connect()
 
     Gtk.main()
 

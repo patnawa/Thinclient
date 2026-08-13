@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, "/usr/local/lib/thinclient")
@@ -73,8 +74,9 @@ def candidates():
         check=False, quiet=True,
     )
     try:
-        blocks = json.loads(listing.stdout).get("blockdevices", [])
-    except ValueError:
+        payload = json.loads(listing.stdout)
+        blocks = payload.get("blockdevices", []) if isinstance(payload, dict) else []
+    except (TypeError, ValueError):
         return []
 
     disks = []
@@ -97,6 +99,48 @@ def candidates():
             "too_small": size < MIN_DISK_BYTES,
         })
     return disks
+
+
+def validate_target(target):
+    """Return a canonical, currently safe whole-disk install target.
+
+    This check lives in the privileged backend, not just the GTK picker: the
+    kiosk user is allowed to invoke this helper through sudo, so command-line
+    arguments must never be trusted.  Re-run it immediately before partitioning
+    so a stale UI selection cannot wipe a disk that has since been mounted.
+    """
+    if not target or not os.path.exists(target):
+        raise InstallError("no such device: %s" % (target or "(empty)"))
+
+    canonical = os.path.realpath(target)
+    available = {
+        os.path.realpath(disk["path"]): disk
+        for disk in candidates()
+        if disk.get("path")
+    }
+    disk = available.get(canonical)
+    if disk is None:
+        raise InstallError(
+            "%s is not an installable whole disk (it may be the boot disk, "
+            "read-only, or a partition)" % target
+        )
+    if disk.get("too_small") or int(disk.get("size") or 0) < MIN_DISK_BYTES:
+        raise InstallError("%s is too small (at least 4 GiB is required)" % target)
+
+    mounts = run(
+        ["lsblk", "-n", "-o", "TYPE,MOUNTPOINTS", canonical],
+        check=False, quiet=True,
+    )
+    if mounts.returncode != 0:
+        raise InstallError("could not re-check mounted filesystems on %s" % target)
+    for line in mounts.stdout.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and fields[1].strip():
+            raise InstallError(
+                "%s has a mounted filesystem (%s); unmount it before installing"
+                % (target, fields[1].strip())
+            )
+    return canonical
 
 
 # ---------------------------------------------------------------- install ----
@@ -198,10 +242,11 @@ def install_bootloader(target, mountpoint):
 
 def seed_config(target):
     """Put the running configuration on the new TCCONF partition."""
-    mountpoint = "/run/thinclient/install-config"
-    os.makedirs(mountpoint, exist_ok=True)
-    run(["mount", part_path(target, 3), mountpoint])
+    mountpoint = tempfile.mkdtemp(prefix="tc-install-config-", dir="/run")
+    mounted = False
     try:
+        run(["mount", part_path(target, 3), mountpoint])
+        mounted = True
         import tcconfig
         cfg = tcconfig.load()
         payload = json.dumps(
@@ -215,26 +260,37 @@ def seed_config(target):
     except Exception as exc:                       # noqa: BLE001
         print("  could not seed the configuration: %s" % exc, file=sys.stderr)
     finally:
-        run(["umount", mountpoint], check=False, quiet=True)
+        if mounted:
+            run(["umount", mountpoint], check=False, quiet=True)
+        try:
+            os.rmdir(mountpoint)
+        except OSError:
+            pass
 
 
 def install(target):
-    if not os.path.exists(target):
-        raise InstallError("no such device: %s" % target)
-    if target == live_device():
-        raise InstallError("%s is the disk this client booted from" % target)
+    target = validate_target(target)
 
-    mountpoint = "/run/thinclient/install-esp"
     partition(target)
     format_partitions(target)
 
-    os.makedirs(mountpoint, exist_ok=True)
-    run(["mount", part_path(target, 2), mountpoint])
+    # /run/thinclient is writable by the kiosk group. Use an exclusive,
+    # root-created mount point directly under /run so a planted symlink cannot
+    # redirect a privileged mount or the files copied through it.
+    mountpoint = tempfile.mkdtemp(prefix="tc-install-esp-", dir="/run")
+    mounted = False
     try:
+        run(["mount", part_path(target, 2), mountpoint])
+        mounted = True
         copy_system(target, mountpoint)
         install_bootloader(target, mountpoint)
     finally:
-        run(["umount", mountpoint], check=False, quiet=True)
+        if mounted:
+            run(["umount", mountpoint], check=False, quiet=True)
+        try:
+            os.rmdir(mountpoint)
+        except OSError:
+            pass
 
     seed_config(target)
     run(["sync"], quiet=True)

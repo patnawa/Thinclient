@@ -9,12 +9,13 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-ISO="$(ls -1 "$REPO"/out/*.iso 2>/dev/null | head -1)"
-TABS="${1:-4}"
+source "$REPO/build/config.sh"
+ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
+TABS="${1:-6}"
 OUT="$REPO/out/shutdowntest"
 MON=/tmp/tc-shutdown-monitor.sock
 
-[ -n "$ISO" ] || { echo "no ISO in $REPO/out"; exit 1; }
+[ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
 rm -rf "$OUT"; mkdir -p "$OUT"; rm -f "$MON"
 pkill -f 'tc-shutdown-monitor' 2>/dev/null; sleep 1
 

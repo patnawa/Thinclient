@@ -33,7 +33,10 @@ step "real RDP session"   quiet bash "$REPO/build/rdpsession-test.sh"
 step "boot: BIOS"         quiet bash "$REPO/build/boottest.sh" bios
 step "boot: UEFI"         quiet bash "$REPO/build/boottest.sh" uefi
 step "boot: Secure Boot"  quiet bash "$REPO/build/boottest.sh" secureboot
-step "shut down button"   bash "$REPO/build/shutdowntest.sh" 5
+# Six tabs from the initially selected connection reaches Shut Down. Keep this
+# explicit because Restart immediately precedes it and a stale count can reboot
+# the VM while falsely reporting that poweroff is broken.
+step "shut down button"   bash "$REPO/build/shutdowntest.sh" 6
 step "install: BIOS"      quiet bash "$REPO/build/installtest.sh" bios
 step "install: UEFI"      quiet bash "$REPO/build/installtest.sh" uefi
 step "PXE: BIOS + central config" bash "$REPO/build/pxetest.sh" bios

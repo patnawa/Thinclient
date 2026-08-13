@@ -18,6 +18,55 @@ sys.path.insert(0, "/usr/local/lib/thinclient")
 import tcconfig  # noqa: E402
 
 
+SESSION_LOG = "/run/thinclient/last-session.log"
+
+
+def run_connection(conn, device, password=None, once=False, debug=False):
+    """Run a connection, retrying only failures that could recover by retrying."""
+    argv, stdin_text = tcconfig.build_command(
+        conn, device, password=password, debug=debug
+    )
+
+    while True:
+        os.makedirs(os.path.dirname(SESSION_LOG), exist_ok=True)
+        with open(SESSION_LOG, "w", encoding="utf-8") as log:
+            log.write("$ %s\n\n" % " ".join(
+                arg if not arg.startswith("/p:") else "/p:***" for arg in argv
+            ))
+            log.flush()
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE if stdin_text else subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=tcconfig.prepare_environment(conn),
+            )
+            if stdin_text:
+                try:
+                    proc.stdin.write(stdin_text.encode())
+                except OSError:
+                    pass
+                finally:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass
+            code = proc.wait()
+
+        if code == 0 or once or not conn.get("auto_reconnect"):
+            return code
+
+        failure = tcconfig.explain_failure(SESSION_LOG, code)
+        if not failure.retryable:
+            print("session ended: %s; not retrying" % failure.message, file=sys.stderr)
+            return code
+
+        delay = max(2, int(conn.get("reconnect_delay", 5)))
+        print("session ended: %s; reconnecting in %ds" %
+              (failure.message, delay), file=sys.stderr)
+        time.sleep(delay)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Start a ThinClient RDP session")
     parser.add_argument("connection", nargs="?", help="connection id (default: the first one)")
@@ -37,33 +86,23 @@ def main():
         sys.exit("no such connection: %s (have: %s)"
                  % (args.connection, ", ".join(c["id"] for c in cfg["connections"])))
 
-    argv, stdin_text = tcconfig.build_command(
-        conn, cfg["device"], password=args.password, debug=args.debug
-    )
-
     if args.show:
+        argv, _stdin_text = tcconfig.build_command(
+            conn, cfg["device"], password=args.password, debug=args.debug
+        )
         print(" ".join(a if not a.startswith("/p:") else "/p:***" for a in argv))
         return 0
 
     if not os.environ.get("DISPLAY"):
         sys.exit("no X display - run this from the client's session")
 
-    while True:
-        proc = subprocess.Popen(
-            argv, stdin=subprocess.PIPE if stdin_text else subprocess.DEVNULL
+    try:
+        return run_connection(
+            conn, cfg["device"], password=args.password,
+            once=args.once, debug=args.debug,
         )
-        if stdin_text:
-            try:
-                proc.stdin.write(stdin_text.encode())
-                proc.stdin.close()
-            except OSError:
-                pass
-        code = proc.wait()
-        if code == 0 or args.once or not conn.get("auto_reconnect"):
-            return code
-        delay = max(2, int(conn.get("reconnect_delay", 5)))
-        print("session ended with %d, reconnecting in %ds" % (code, delay), file=sys.stderr)
-        time.sleep(delay)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        sys.exit("could not start the session: %s" % exc)
 
 
 if __name__ == "__main__":

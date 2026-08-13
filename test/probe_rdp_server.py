@@ -38,6 +38,9 @@ FAILURE_CODES = {
     6: "SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER",
 }
 
+TPKT_HEADER_SIZE = 4
+X224_CONFIRM_SIZE = 7
+
 
 def connection_request(requested=REQUESTED_PROTOCOLS):
     """Build the X.224 Connection Request that starts an RDP conversation.
@@ -70,19 +73,44 @@ def parse_response(body):
     return {"error": "unexpected response type 0x%02X" % kind}
 
 
+def _recv_exact(sock, size):
+    """Read up to *size* bytes, tolerating normal short TCP reads."""
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def probe(host, port=3389, timeout=10):
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.sendall(connection_request())
-        header = sock.recv(4)
-        if len(header) < 4:
+        header = _recv_exact(sock, TPKT_HEADER_SIZE)
+        if not header:
             return {"error": "server closed the connection without replying"}
-        total = struct.unpack("!H", header[2:4])[0]
-        body = b""
-        while len(body) < total - 4:
-            chunk = sock.recv(total - 4 - len(body))
-            if not chunk:
-                break
-            body += chunk
+        if len(header) < TPKT_HEADER_SIZE:
+            return {"error": "truncated TPKT header (%d of %d bytes)" %
+                    (len(header), TPKT_HEADER_SIZE)}
+
+        version, reserved, total = struct.unpack("!BBH", header)
+        if version != 3 or reserved != 0:
+            return {"error": "invalid TPKT header (version %d, reserved %d)" %
+                    (version, reserved)}
+
+        minimum = TPKT_HEADER_SIZE + X224_CONFIRM_SIZE
+        if total < minimum:
+            return {"error": "invalid TPKT length %d (minimum is %d)" %
+                    (total, minimum)}
+
+        expected = total - TPKT_HEADER_SIZE
+        body = _recv_exact(sock, expected)
+        if len(body) < expected:
+            return {"error": "truncated TPKT response (%d of %d body bytes)" %
+                    (len(body), expected)}
     return parse_response(body)
 
 

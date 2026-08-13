@@ -42,7 +42,7 @@ for f in "$PXE/pxelinux.cfg/default" "$PXE/grub/grub.cfg" "$PXE/boot.ipxe"; do
     else
         # Already rendered once: retarget it instead of leaving a stale address.
         sed -i -E "s|(http://)[^/[:space:]]+(/thinclient)|\1$SERVER\2|g; \
-                   s|\(http,[^)]+\)|($SERVER)|g" "$f" 2>/dev/null || true
+                   s|\(http,[^)]+\)|(http,$SERVER)|g" "$f" 2>/dev/null || true
         echo "  updated    ${f#$PXE/}"
     fi
 done

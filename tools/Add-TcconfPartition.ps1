@@ -63,21 +63,17 @@ if (-not (Test-Path $seed)) {
 }
 $script = @'
 #!/bin/bash
-set -u
-# Find the disk we were just handed: an isohybrid ISO reports its iso9660
-# label on the whole device, and ours is THINCLIENT.
-DEV=""
-for d in /dev/sd?; do
-    [ -b "$d" ] || continue
-    if [ "$(blkid -o value -s LABEL "$d" 2>/dev/null)" = "THINCLIENT" ]; then
-        DEV="$d"; break
-    fi
-done
-[ -n "$DEV" ] || { echo "FAIL: could not find the ThinClient disk in WSL"; exit 1; }
+set -euo pipefail
+DEV="${1:-}"
+SEED="${2:-}"
+[ -b "$DEV" ] || { echo "FAIL: selected WSL device is not a disk: $DEV"; exit 1; }
+[ "$(blkid -o value -s LABEL "$DEV" 2>/dev/null)" = "THINCLIENT" ] \
+    || { echo "FAIL: $DEV is not labelled THINCLIENT"; exit 1; }
 echo "found $DEV"
 
-if blkid -L TCCONF >/dev/null 2>&1; then
+if lsblk -nrpo LABEL "$DEV" | grep -Fxq TCCONF; then
     echo "a TCCONF partition already exists; nothing to do"
+    echo "TCCONF_OK"
     exit 0
 fi
 
@@ -88,49 +84,99 @@ sgdisk -e "$DEV" >/dev/null 2>&1
 NEXT=$(sgdisk -p "$DEV" 2>/dev/null | awk '/^ *[0-9]+ /{n=$1} END{print n+1}')
 [ -n "$NEXT" ] || NEXT=3
 echo "creating partition $NEXT"
-sgdisk -n "$NEXT:0:0" -t "$NEXT:0700" -c "$NEXT:TCCONF" "$DEV" || exit 1
-partprobe "$DEV" 2>/dev/null
+sgdisk -n "$NEXT:0:0" -t "$NEXT:0700" -c "$NEXT:TCCONF" "$DEV"
+partprobe "$DEV" 2>/dev/null || true
 sleep 2
 
 PART="${DEV}${NEXT}"
 [ -b "$PART" ] || PART="${DEV}p${NEXT}"
 [ -b "$PART" ] || { echo "FAIL: $PART did not appear"; exit 1; }
 
-mkfs.vfat -F 32 -n TCCONF "$PART" >/dev/null || exit 1
-mkdir -p /mnt/tcconf
-mount "$PART" /mnt/tcconf || exit 1
-mkdir -p /mnt/tcconf/ca-certificates
-if [ -f /tmp/tc-seed-config.json ]; then
-    cp /tmp/tc-seed-config.json /mnt/tcconf/config.json
+mkfs.vfat -F 32 -n TCCONF "$PART" >/dev/null
+MOUNTPOINT=$(mktemp -d /run/tcconf.XXXXXX)
+MOUNTED=0
+cleanup() {
+    [ "$MOUNTED" -eq 0 ] || umount "$MOUNTPOINT" 2>/dev/null || true
+    rmdir "$MOUNTPOINT" 2>/dev/null || true
+}
+trap cleanup EXIT
+mount "$PART" "$MOUNTPOINT"
+MOUNTED=1
+mkdir -p "$MOUNTPOINT/ca-certificates"
+if [ -n "$SEED" ] && [ -f "$SEED" ]; then
+    cp -- "$SEED" "$MOUNTPOINT/config.json"
     echo "seeded config.json"
 fi
 sync
-umount /mnt/tcconf
+umount "$MOUNTPOINT"
+MOUNTED=0
 echo "TCCONF_OK"
 '@
 
-$tempScript = Join-Path $env:TEMP 'tc-add-tcconf.sh'
-$script -replace "`r`n", "`n" | Set-Content -Path $tempScript -NoNewline -Encoding utf8
+$token = [guid]::NewGuid().ToString('N')
+$tempScript = Join-Path $env:TEMP "tc-add-tcconf-$token.sh"
+$wslSeedPath = "/tmp/tc-seed-config-$token.json"
+$script -replace "`r`n", "`n" | Set-Content -Path $tempScript -NoNewline -Encoding ascii
 
 Write-Host "handing disk $DiskNumber to WSL ($Distro)"
-wsl --mount --bare $devicePath
+$attached = $false
+$output = @()
 try {
-    if ($seed -and (Test-Path $seed)) {
-        $wslSeed = wsl -d $Distro -- wslpath -a $seed
-        wsl -d $Distro -u root -- cp $wslSeed /tmp/tc-seed-config.json
+    # Snapshot whole disks before attaching the selected Windows drive. The one
+    # new name afterwards is the only safe mapping; scanning by label can select
+    # another ThinClient stick when several are connected.
+    wsl -d $Distro -u root -e true
+    if ($LASTEXITCODE -ne 0) { throw "Could not start WSL distribution '$Distro'." }
+    $before = @(wsl -d $Distro -u root -e lsblk -dn -o NAME)
+    if ($LASTEXITCODE -ne 0) { throw "Could not list WSL disks before attach." }
+    $before = @($before | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+
+    wsl --mount --bare $devicePath
+    if ($LASTEXITCODE -ne 0) { throw "WSL could not attach disk $DiskNumber." }
+    $attached = $true
+    Start-Sleep -Seconds 2
+
+    $after = @(wsl -d $Distro -u root -e lsblk -dn -o NAME)
+    if ($LASTEXITCODE -ne 0) { throw "Could not list WSL disks after attach." }
+    $after = @($after | ForEach-Object { "$($_)".Trim() } | Where-Object { $_ })
+    $newDevices = @($after | Where-Object { $_ -notin $before })
+    if ($newDevices.Count -ne 1) {
+        throw "Expected one newly attached WSL disk; found $($newDevices.Count)."
     }
-    $wslScript = wsl -d $Distro -- wslpath -a $tempScript
-    $output = wsl -d $Distro -u root -- bash $wslScript
+    $linuxDevice = "/dev/$($newDevices[0])"
+
+    $seedArgument = '-'
+    if ($seed -and (Test-Path $seed)) {
+        $wslSeed = wsl -d $Distro -u root -e wslpath -a $seed
+        if ($LASTEXITCODE -ne 0 -or -not $wslSeed) {
+            throw "Could not translate the seed configuration path for WSL."
+        }
+        wsl -d $Distro -u root -e cp -- $wslSeed $wslSeedPath
+        if ($LASTEXITCODE -ne 0) { throw "Could not copy config.json into WSL." }
+        $seedArgument = $wslSeedPath
+    }
+    $wslScript = wsl -d $Distro -u root -e wslpath -a $tempScript
+    if ($LASTEXITCODE -ne 0 -or -not $wslScript) {
+        throw "Could not translate the helper script path for WSL."
+    }
+    $output = @(wsl -d $Distro -u root -e bash $wslScript $linuxDevice $seedArgument 2>&1)
+    $helperStatus = $LASTEXITCODE
     $output | ForEach-Object { "  $_" }
+    if ($helperStatus -ne 0) { throw "The WSL partition helper failed." }
+    if (-not ($output -match 'TCCONF_OK')) {
+        throw "The WSL helper did not report success."
+    }
 }
 finally {
-    wsl --unmount $devicePath | Out-Null
+    wsl -d $Distro -u root -e rm -f -- $wslSeedPath 2>$null
+    if ($attached) {
+        wsl --unmount $devicePath | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "WSL could not detach $devicePath; run: wsl --unmount $devicePath"
+        }
+    }
+    Remove-Item -LiteralPath $tempScript -Force -ErrorAction SilentlyContinue
 }
 
-if ($output -match 'TCCONF_OK') {
-    Write-Host "`nTCCONF created. Reconnect the stick and it will appear in Explorer." -ForegroundColor Green
-    Write-Host "Edit config.json on it to set your servers."
-}
-else {
-    Write-Host "`nDid not complete. The stick still boots; settings just will not persist." -ForegroundColor Yellow
-}
+Write-Host "`nTCCONF created. Reconnect the stick and it will appear in Explorer." -ForegroundColor Green
+Write-Host "Edit config.json on it to set your servers."
