@@ -32,6 +32,11 @@ kbd
 # --- firmware (wired NICs and common GPUs; wifi blobs are optional) ---
 firmware-linux-free
 firmware-realtek
+# Older Broadcom NetXtreme II wired adapters need separate firmware even
+# though their bnx2/bnx2x kernel drivers ship in linux-image-amd64.
+firmware-bnx2
+firmware-bnx2x
+firmware-misc-nonfree
 firmware-sof-signed
 intel-microcode
 amd64-microcode

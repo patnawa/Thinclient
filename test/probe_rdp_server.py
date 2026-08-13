@@ -13,105 +13,35 @@ No credentials are sent and no logon is attempted, so this leaves no failed
 sign-in events behind.
 """
 
-import socket
-import struct
+from pathlib import Path
 import sys
 
-# Protocol flags from [MS-RDPBCGR] 2.2.1.1.1
-PROTOCOL_TLS = 0x00000001
-PROTOCOL_HYBRID = 0x00000002
-PROTOCOL_HYBRID_EX = 0x00000008
-REQUESTED_PROTOCOLS = PROTOCOL_TLS | PROTOCOL_HYBRID | PROTOCOL_HYBRID_EX
+# The script runs both from a source checkout and from /opt/tests in an image.
+repo_module_dir = (
+    Path(__file__).resolve().parents[1] / "overlay/usr/local/lib/thinclient"
+)
+installed_module_dir = Path("/usr/local/lib/thinclient")
+for module_dir in (repo_module_dir, installed_module_dir):
+    if (module_dir / "rdpprobe.py").is_file():
+        sys.path.insert(0, str(module_dir))
+        break
 
-PROTOCOLS = {
-    0x00000000: ("RDP", "legacy RDP security - no TLS"),
-    PROTOCOL_TLS: ("TLS", "TLS 1.x, server certificate, no CredSSP"),
-    PROTOCOL_HYBRID: ("HYBRID", "NLA / CredSSP - credentials required before the desktop"),
-    PROTOCOL_HYBRID_EX: ("HYBRID_EX", "NLA with Early User Authorization"),
-}
-FAILURE_CODES = {
-    1: "SSL_REQUIRED_BY_SERVER - the server insists on TLS/NLA",
-    2: "SSL_NOT_ALLOWED_BY_SERVER - the server refuses TLS",
-    3: "SSL_CERT_NOT_ON_SERVER - the server has no usable certificate",
-    4: "INCONSISTENT_FLAGS",
-    5: "HYBRID_REQUIRED_BY_SERVER - NLA is mandatory",
-    6: "SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER",
-}
+import rdpprobe  # noqa: E402
 
-TPKT_HEADER_SIZE = 4
-X224_CONFIRM_SIZE = 7
-
-
-def connection_request(requested=REQUESTED_PROTOCOLS):
-    """Build the X.224 Connection Request that starts an RDP conversation.
-
-    Layout per [MS-RDPBCGR] 2.2.1.1: a TPKT header, an X.224 CR TPDU, then the
-    RDP negotiation request. The X.224 length indicator counts every byte after
-    itself - CR(1) + DST-REF(2) + SRC-REF(2) + class(1) = 6, plus the
-    negotiation request. Getting that byte wrong makes the server reset the
-    connection rather than reply.
-    """
-    neg_req = struct.pack("<BBHI", 0x01, 0x00, 8, requested)
-    x224 = struct.pack("!BBHHB", 6 + len(neg_req), 0xE0, 0x0000, 0x0000, 0x00) + neg_req
-    return struct.pack("!BBH", 3, 0, 4 + len(x224)) + x224
-
-
-def parse_response(body):
-    """Interpret the X.224 Connection Confirm returned by the server."""
-    if len(body) < 8:
-        return {"error": "no negotiation response (server may be very old RDP)"}
-    neg = body[7:]                      # skip the 7-byte X.224 CC header
-    if len(neg) < 8:
-        return {"error": "truncated negotiation response"}
-
-    kind, _flags, _length, payload = struct.unpack("<BBHI", neg[:8])
-    if kind == 0x02:
-        name, description = PROTOCOLS.get(payload, ("UNKNOWN(0x%08X)" % payload, ""))
-        return {"selected": name, "description": description, "raw": payload}
-    if kind == 0x03:
-        return {"failure": FAILURE_CODES.get(payload, "code %d" % payload), "raw": payload}
-    return {"error": "unexpected response type 0x%02X" % kind}
-
-
-def _recv_exact(sock, size):
-    """Read up to *size* bytes, tolerating normal short TCP reads."""
-    chunks = []
-    remaining = size
-    while remaining:
-        chunk = sock.recv(remaining)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
-
-
-def probe(host, port=3389, timeout=10):
-    with socket.create_connection((host, port), timeout=timeout) as sock:
-        sock.sendall(connection_request())
-        header = _recv_exact(sock, TPKT_HEADER_SIZE)
-        if not header:
-            return {"error": "server closed the connection without replying"}
-        if len(header) < TPKT_HEADER_SIZE:
-            return {"error": "truncated TPKT header (%d of %d bytes)" %
-                    (len(header), TPKT_HEADER_SIZE)}
-
-        version, reserved, total = struct.unpack("!BBH", header)
-        if version != 3 or reserved != 0:
-            return {"error": "invalid TPKT header (version %d, reserved %d)" %
-                    (version, reserved)}
-
-        minimum = TPKT_HEADER_SIZE + X224_CONFIRM_SIZE
-        if total < minimum:
-            return {"error": "invalid TPKT length %d (minimum is %d)" %
-                    (total, minimum)}
-
-        expected = total - TPKT_HEADER_SIZE
-        body = _recv_exact(sock, expected)
-        if len(body) < expected:
-            return {"error": "truncated TPKT response (%d of %d body bytes)" %
-                    (len(body), expected)}
-    return parse_response(body)
+# Re-export the original public surface so existing users importing this
+# diagnostic script keep working while the implementation lives in the image.
+PROTOCOL_TLS = rdpprobe.PROTOCOL_TLS
+PROTOCOL_HYBRID = rdpprobe.PROTOCOL_HYBRID
+PROTOCOL_HYBRID_EX = rdpprobe.PROTOCOL_HYBRID_EX
+REQUESTED_PROTOCOLS = rdpprobe.REQUESTED_PROTOCOLS
+PROTOCOLS = rdpprobe.PROTOCOLS
+FAILURE_CODES = rdpprobe.FAILURE_CODES
+TPKT_HEADER_SIZE = rdpprobe.TPKT_HEADER_SIZE
+X224_CONFIRM_SIZE = rdpprobe.X224_CONFIRM_SIZE
+MAX_TPKT_SIZE = rdpprobe.MAX_TPKT_SIZE
+connection_request = rdpprobe.connection_request
+parse_response = rdpprobe.parse_response
+probe = rdpprobe.probe
 
 
 def main():

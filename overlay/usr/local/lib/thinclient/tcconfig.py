@@ -410,7 +410,8 @@ def save(cfg):
         return True, "Settings saved and will survive a reboot."
     if session_ok:
         return True, ("Settings applied for this session only — %s. "
-                      "Add a partition labelled TCCONF to keep them." % hint)
+                      "Use a raw-written standard image or add a writable "
+                      "partition labelled TCCONF to keep them." % hint)
     return False, ("Settings could not be stored: %s. They are active now but "
                    "will be lost when the session restarts." % session_error)
 

@@ -1,10 +1,11 @@
 <#
 .SYNOPSIS
-    Add the TCCONF settings partition to a stick that already holds the ISO.
+    Add TCCONF to a stick made from an older/custom ISO without persistence.
 
 .DESCRIPTION
-    Use this if Write-UsbImage.ps1 wrote the image successfully but could not
-    create the persistence partition.
+    Current ThinClient images already embed TCCONF. Use this legacy helper only
+    if Write-UsbImage.ps1 reports that an older/custom image has no embedded
+    settings partition and its automatic fallback could not create one.
 
     An isohybrid image leaves the GPT backup header at the end of the *image*
     rather than the end of the disk, which Windows' partition tools do not

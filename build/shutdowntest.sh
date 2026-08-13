@@ -11,7 +11,7 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
-TABS="${1:-6}"
+TABS="${1:-7}"
 OUT="$REPO/out/shutdowntest"
 MON=/tmp/tc-shutdown-monitor.sock
 

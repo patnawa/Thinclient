@@ -1,4 +1,4 @@
-# Build output. Large (the ISO alone is ~450 MB, the squashfs ~380 MB), fully
+# Build output. Large (the default image is hundreds of MiB), fully
 # reproducible from source, and the test screenshots in here can contain the
 # contents of a real remote desktop - so it must never be published.
 /out/

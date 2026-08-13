@@ -22,6 +22,7 @@ echo "shell (posix sh):"
 for f in overlay/usr/local/bin/tc-session \
          overlay/usr/local/sbin/tc-fetch-config \
          overlay/usr/local/sbin/tc-save-config \
+         overlay/usr/local/sbin/tc-prepare-support \
          overlay/usr/local/sbin/tc-automount \
          overlay/usr/local/sbin/tc-autoinstall \
          overlay/usr/local/sbin/tc-diag \

@@ -62,9 +62,11 @@ opt_install() { log "optional: $1"; shift; apt-get install -y --no-install-recom
 [ "${INCLUDE_USB_REDIR:-0}"  = "1" ] && opt_install "USB redirection" \
     libusb-1.0-0 usbutils
 [ "${INCLUDE_WIFI:-0}"       = "1" ] && opt_install "wifi" \
-    wpasupplicant iw
+    wpasupplicant iw wireless-regdb
 [ "${INCLUDE_WIFI_FIRMWARE:-0}" = "1" ] && opt_install "wifi firmware blobs" \
-    firmware-iwlwifi firmware-atheros firmware-brcm80211 firmware-misc-nonfree
+    firmware-iwlwifi firmware-atheros firmware-brcm80211 firmware-mediatek
+[ "${INCLUDE_SSH_SERVER:-0}" = "1" ] && opt_install "key-only remote support" \
+    openssh-server
 [ "${INCLUDE_ADMIN_TOOLS:-0}" = "1" ] && opt_install "admin tools" \
     xterm openssh-client nano htop pciutils ethtool rsync
 
@@ -124,11 +126,26 @@ if ! id thin >/dev/null 2>&1; then
   useradd -m -s /bin/bash -c "Thin Client" thin
   passwd -d thin
 fi
+if [ "${INCLUDE_SSH_SERVER:-0}" = "1" ]; then
+  if ! id support >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -c "ThinClient Remote Support" support
+  fi
+  # Keep the account unlocked for public-key SSH while making its local/SSH
+  # password unknowable. Password authentication is also disabled in sshd.
+  SUPPORT_RANDOM="$(openssl rand -hex 32)"
+  usermod -p "$(openssl passwd -6 "$SUPPORT_RANDOM")" support
+  unset SUPPORT_RANDOM
+fi
 # systemd-journal and adm let the Diagnostics page read the boot log without
 # giving the kiosk user any other privilege.
 for g in video audio input plugdev netdev lp render dialout systemd-journal adm; do
   getent group "$g" >/dev/null && usermod -aG "$g" thin || true
 done
+if id support >/dev/null 2>&1; then
+  for g in netdev systemd-journal adm; do
+    getent group "$g" >/dev/null && usermod -aG "$g" support || true
+  done
+fi
 # Root has no password and no shell access from the console by default.
 passwd -l root
 
@@ -165,6 +182,23 @@ systemctl enable systemd-timesyncd.service   >/dev/null 2>&1 || true
 if [ "${INCLUDE_PRINTING:-0}" = "1" ]; then
   systemctl enable cups.service cups-browsed.service avahi-daemon.service >/dev/null 2>&1 || true
 fi
+  if [ "${INCLUDE_SSH_SERVER:-0}" = "1" ]; then
+    # A unit condition supplied by the overlay keeps the daemon closed until a
+    # valid public key is found on TCCONF at boot.
+    systemctl unmask ssh.service >/dev/null 2>&1 || true
+    systemctl enable ssh.service >/dev/null 2>&1 || true
+    systemctl disable ssh.socket >/dev/null 2>&1 || true
+    systemctl mask ssh.socket >/dev/null 2>&1 || true
+    # Debian's generated Wants= link would otherwise create throw-away host
+    # keys even when ssh.service's support-key condition is false. The runtime
+    # helper owns key generation and restores the same identity from TCCONF.
+    systemctl mask sshd-keygen.service >/dev/null 2>&1 || true
+  else
+    # Cached rootfs builds must honour a later opt-out too: never leave a
+    # previously installed daemon or socket enabled in an SSH-free image.
+    systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
+    systemctl mask ssh.service ssh.socket sshd-keygen.service >/dev/null 2>&1 || true
+  fi
 
 # Audio belongs to the user session, so enable it for every user by default.
 systemctl --global enable pipewire.socket pipewire-pulse.socket >/dev/null 2>&1 || true

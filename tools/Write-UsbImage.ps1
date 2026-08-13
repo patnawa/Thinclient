@@ -13,6 +13,10 @@
       * the disk model and size are printed and must be confirmed
       * the write is verified by reading the bytes back and comparing hashes
 
+    Current images already contain a small FAT32 TCCONF settings partition. The
+    script exposes that volume in Windows after writing; older images fall back
+    to creating it in the unused space on the stick.
+
     MUST BE RUN ELEVATED. Raw access to a physical disk requires administrator
     rights on Windows.
 
@@ -25,6 +29,10 @@
 .PARAMETER SkipVerify
     Skip the read-back verification (faster, but you lose the one check that
     proves the stick actually holds what you think it does).
+
+.PARAMETER NoPersistence
+    Do not create a settings partition when writing an older image that does
+    not contain one. It cannot remove TCCONF from a current embedded image.
 
 .EXAMPLE
     .\Write-UsbImage.ps1                 # list removable disks, write nothing
@@ -217,17 +225,49 @@ Set-Disk -Number $DiskNumber -IsOffline $false -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 3
 
 # ------------------------------------------------- persistence partition -----
-# The ISO occupies a few hundred MB of a multi-GB stick. A FAT32 partition
-# labelled TCCONF in the free space is what makes Settings survive a reboot,
-# and because it is FAT32 you can edit config.json on it from Windows. It is
-# capped below Windows' FAT32 formatting limit on large sticks.
+# Current images contain a ready-to-use FAT32 TCCONF partition. Detect it on the
+# selected disk (never by label globally), give it a drive letter if possible,
+# and avoid creating a duplicate. The creation path remains for older/custom
+# images and is capped below Windows' FAT32 formatting limit on large sticks.
 if (-not $NoPersistence) {
     Write-Host ""
-    Write-Host "creating the TCCONF persistence partition"
+    Write-Host "preparing the TCCONF settings partition"
     try {
         Update-Disk -Number $DiskNumber -ErrorAction SilentlyContinue
         $disk = Get-Disk -Number $DiskNumber
         if ($disk.IsReadOnly) { Set-Disk -Number $DiskNumber -IsReadOnly $false }
+
+        $tcconfPartition = $null
+        foreach ($candidate in @(Get-Partition -DiskNumber $DiskNumber -ErrorAction SilentlyContinue)) {
+            try {
+                $candidateVolume = Get-Volume -Partition $candidate -ErrorAction Stop
+                if ($candidateVolume.FileSystemLabel -eq 'TCCONF') {
+                    $tcconfPartition = $candidate
+                    break
+                }
+            }
+            catch { continue }
+        }
+
+        if ($tcconfPartition) {
+            if (-not $tcconfPartition.DriveLetter) {
+                Add-PartitionAccessPath -DiskNumber $DiskNumber `
+                    -PartitionNumber $tcconfPartition.PartitionNumber `
+                    -AssignDriveLetter -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 1
+                $tcconfPartition = Get-Partition -DiskNumber $DiskNumber `
+                    -PartitionNumber $tcconfPartition.PartitionNumber
+            }
+            $letter = $tcconfPartition.DriveLetter
+            $location = if ($letter) { "${letter}:" } else { "partition $($tcconfPartition.PartitionNumber)" }
+            Write-Host ("  embedded TCCONF ready at {0} ({1} MB)" -f $location,
+                        [math]::Round($tcconfPartition.Size/1MB)) -ForegroundColor Green
+            if ($letter) {
+                Write-Host "  edit ${letter}:\config.json to change what the client connects to"
+            }
+        }
+        else {
+        Write-Host "  this older image has no embedded TCCONF; creating one"
 
         $freeBytes = $disk.LargestFreeExtent
         if ($freeBytes -lt 64MB) {
@@ -276,12 +316,17 @@ if (-not $NoPersistence) {
             Write-Host "  seeded ${letter}:\config.json  (server: $server)"
             Write-Host "  edit that file here to change what the client connects to"
         }
+        }
     }
     catch {
-        Write-Host "  could not create the persistence partition: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "  could not prepare the persistence partition: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "  The stick still boots. Add it later in Disk Management:" -ForegroundColor Yellow
         Write-Host "    new simple volume in the free space, FAT32, volume label TCCONF"
     }
+}
+elseif ($NoPersistence) {
+    Write-Host "Note: -NoPersistence skips legacy partition creation; an embedded" -ForegroundColor Yellow
+    Write-Host "TCCONF partition already present in the ISO remains on the stick." -ForegroundColor Yellow
 }
 
 Write-Host ""

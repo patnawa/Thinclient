@@ -14,9 +14,11 @@ import copy  # noqa: E402
 import os  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
+import threading  # noqa: E402
 
 sys.path.insert(0, "/usr/local/lib/thinclient")
 import tcconfig  # noqa: E402
+import networkdiag  # noqa: E402
 
 TIMEZONES = [
     "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata",
@@ -510,10 +512,14 @@ class SettingsDialog(Gtk.Dialog):
 
 # ----------------------------------------------------------------- network ---
 class NetworkDialog(Gtk.Dialog):
-    def __init__(self, parent):
+    def __init__(self, parent, connections=None):
         super().__init__(title="Network", transient_for=parent, modal=True)
         self.set_default_size(700, 520)
         self.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.connections = list(connections or [])
+        self._test_generation = 0
+        self._test_destroyed = False
+        self.connect("destroy", self._on_test_destroyed)
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
         self.get_content_area().pack_start(box, True, True, 0)
@@ -525,6 +531,7 @@ class NetworkDialog(Gtk.Dialog):
         notebook = Gtk.Notebook()
         notebook.append_page(self._wired_page(), Gtk.Label(label="Wired"))
         notebook.append_page(self._wifi_page(), Gtk.Label(label="Wi-Fi"))
+        notebook.append_page(self._test_page(), Gtk.Label(label="Test"))
         box.pack_start(notebook, True, True, 0)
 
         self.message = Gtk.Label(xalign=0)
@@ -533,15 +540,122 @@ class NetworkDialog(Gtk.Dialog):
         self.refresh()
         self.show_all()
 
+    def _test_page(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=12)
+        intro = Gtk.Label(
+            label=("Check the route, DNS, selected server port, and RDP/VNC "
+                   "handshake. Gateway ping is informational. No credentials "
+                   "are sent."),
+            xalign=0,
+        )
+        intro.set_line_wrap(True)
+        box.pack_start(intro, False, False, 0)
+
+        row = Gtk.Box(spacing=8)
+        row.pack_start(Gtk.Label(label="Target", xalign=0), False, False, 0)
+        self.test_target = Gtk.ComboBoxText()
+        for connection in self.connections:
+            host = connection.get("host") or "not configured"
+            self.test_target.append(
+                connection.get("id") or "",
+                "%s — %s:%s" % (connection.get("name") or "Connection", host,
+                                 connection.get("port") or "?"),
+            )
+        if self.connections:
+            self.test_target.set_active(0)
+        self.test_target.set_hexpand(True)
+        row.pack_start(self.test_target, True, True, 0)
+        box.pack_start(row, False, False, 0)
+
+        self.test_spinner = Gtk.Spinner()
+        self.test_run = Gtk.Button(label="Run Network Test")
+        self.test_run.get_style_context().add_class("suggested-action")
+        self.test_run.connect("clicked", self._run_network_test)
+        self.test_run.set_sensitive(bool(self.connections))
+        self.test_copy = Gtk.Button(label="Copy Report")
+        self.test_copy.set_sensitive(False)
+        self.test_copy.connect("clicked", self._copy_network_report)
+        controls = Gtk.Box(spacing=8)
+        controls.pack_start(self.test_run, False, False, 0)
+        controls.pack_start(self.test_spinner, False, False, 0)
+        controls.pack_end(self.test_copy, False, False, 0)
+        box.pack_start(controls, False, False, 0)
+
+        scroller = Gtk.ScrolledWindow()
+        self.test_report = Gtk.TextView(editable=False, monospace=True,
+                                        cursor_visible=False)
+        self.test_report.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.test_report.get_buffer().set_text(
+            ("Choose a configured connection, then run the test."
+             if self.connections else
+             "No configured connections are available to test.")
+        )
+        scroller.add(self.test_report)
+        box.pack_start(scroller, True, True, 0)
+        return box
+
+    def _selected_test_target(self):
+        active = self.test_target.get_active_id()
+        return next((connection for connection in self.connections
+                     if connection.get("id") == active), {})
+
+    def _run_network_test(self, *_):
+        connection = self._selected_test_target()
+        # Snapshot only what this credential-free probe needs. Never hand a
+        # password, username, domain, or extra argument to the worker/report.
+        target = {key: connection.get(key) for key in
+                  ("name", "host", "port", "protocol", "gateway")}
+        self._test_generation += 1
+        generation = self._test_generation
+        self.test_run.set_sensitive(False)
+        self.test_copy.set_sensitive(False)
+        self.test_spinner.start()
+        self.test_report.get_buffer().set_text(
+            "Testing local network, DNS, and %s:%s…" %
+            (target.get("host") or "the selected server", target.get("port") or "?")
+        )
+
+        def worker():
+            try:
+                report = networkdiag.run_preflight(target)
+            except Exception as exc:                # fail visibly, never freeze UI
+                report = "Network diagnostics\nFAILED — %s" % str(exc)[:180]
+            GLib.idle_add(self._finish_network_test, generation, report)
+
+        threading.Thread(target=worker, daemon=True, name="network-preflight").start()
+
+    def _finish_network_test(self, generation, report):
+        if self._test_destroyed or generation != self._test_generation:
+            return False
+        self.test_report.get_buffer().set_text(report)
+        self.test_spinner.stop()
+        self.test_run.set_sensitive(True)
+        self.test_copy.set_sensitive(True)
+        return False
+
+    def _copy_network_report(self, *_):
+        buffer_ = self.test_report.get_buffer()
+        text = buffer_.get_text(buffer_.get_start_iter(), buffer_.get_end_iter(), True)
+        Gtk.Clipboard.get_default(self.get_display()).set_text(text, -1)
+        self.message.set_text("Network test report copied to the clipboard.")
+
+    def _on_test_destroyed(self, *_):
+        self._test_destroyed = True
+        self._test_generation += 1
+
     def _nmcli(self, *args, timeout=45):
         return subprocess.run(["sudo", "-n", "/usr/bin/nmcli", *args],
                               capture_output=True, text=True, timeout=timeout)
 
     def refresh(self, *_):
-        result = subprocess.run(
-            ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"],
-            capture_output=True, text=True, timeout=15,
-        )
+        try:
+            result = subprocess.run(
+                ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"],
+                capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            result = type("Result", (), {"stdout": "", "stderr": str(exc),
+                                          "returncode": 1})()
         lines = []
         self.wired_devices = []
         for row in result.stdout.strip().splitlines():
@@ -550,10 +664,13 @@ class NetworkDialog(Gtk.Dialog):
                 continue
             if parts[1] == "ethernet":
                 self.wired_devices.append(parts[0])
-            addr = subprocess.run(
-                ["nmcli", "-g", "IP4.ADDRESS,IP4.GATEWAY", "device", "show", parts[0]],
-                capture_output=True, text=True, timeout=15,
-            ).stdout.split()
+            try:
+                addr = subprocess.run(
+                    ["nmcli", "-g", "IP4.ADDRESS,IP4.GATEWAY", "device", "show", parts[0]],
+                    capture_output=True, text=True, timeout=15,
+                ).stdout.split()
+            except (OSError, subprocess.SubprocessError):
+                addr = []
             lines.append("%-10s %-9s %-12s %s" % (parts[0], parts[1], parts[2],
                                                   " ".join(addr)))
         self.status.set_markup("<tt>%s</tt>" % GLib.markup_escape_text(

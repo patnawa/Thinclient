@@ -11,7 +11,10 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib, Pango  # noqa: E402
 
+import json  # noqa: E402
 import os  # noqa: E402
+import platform  # noqa: E402
+import shlex  # noqa: E402
 import shutil  # noqa: E402
 import signal  # noqa: E402
 import socket  # noqa: E402
@@ -28,6 +31,8 @@ SESSION_LOG = "/run/thinclient/last-session.log"
 BUILD_INFO = "/etc/thinclient/build-info"
 SESSION_BAR = "/usr/local/lib/thinclient/sessionbar.py"
 DISCONNECT_MARKER = "/run/thinclient/disconnect-requested"
+GITHUB_URL = "https://github.com/patnawa/Thinclient"
+_HARDWARE_CACHE = None
 
 CSS = b"""
 window, .tc-root            { background-color: #16191d; }
@@ -55,6 +60,11 @@ button.tc-primary           { background-color: #2f6fd0; color: #ffffff;
 button.tc-primary:hover     { background-color: #3d80e6; }
 button.tc-danger:hover      { background-color: #a8322c; border-color: #a8322c; color: #fff; }
 .tc-empty                   { color: #7f8b99; font-size: 14px; }
+.tc-about-title             { color: #ffffff; font-size: 24px; font-weight: bold; }
+.tc-about-section           { color: #78a9ef; font-size: 11px; font-weight: bold;
+                              letter-spacing: 1px; margin-top: 8px; }
+.tc-about-key               { color: #8b97a5; font-size: 12px; }
+.tc-about-value             { color: #e6ebf0; font-size: 12px; }
 """
 
 
@@ -92,6 +102,195 @@ def build_info():
     return info
 
 
+def product_title(info):
+    """Return the product name and release without hard-coding either one."""
+    name = str(info.get("name") or "ThinClient").strip() or "ThinClient"
+    version = str(info.get("version") or "").strip()
+    return "%s %s" % (name, version) if version else name
+
+
+def parse_cpu_info(text, cpu_count=None):
+    """Condense Linux cpuinfo into one user-facing line."""
+    values = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip().lower()
+        value = " ".join(value.split())
+        if value and key not in values:
+            values[key] = value
+
+    model = next((values[key] for key in
+                  ("model name", "hardware", "cpu model", "machine")
+                  if values.get(key)), "")
+    if not model:
+        processor = values.get("processor", "")
+        model = processor if processor and not processor.isdigit() else ""
+    if not model:
+        return "Unknown"
+    if cpu_count:
+        noun = "CPU" if cpu_count == 1 else "CPUs"
+        return "%s · %d logical %s" % (model, cpu_count, noun)
+    return model
+
+
+def parse_meminfo(text):
+    """Return installed memory from Linux meminfo in a compact form."""
+    for line in text.splitlines():
+        if not line.startswith("MemTotal:"):
+            continue
+        fields = line.split()
+        try:
+            kib = int(fields[1])
+        except (IndexError, ValueError):
+            return "Unknown"
+        return "%.1f GiB" % (kib / 1024.0 / 1024.0)
+    return "Unknown"
+
+
+def parse_lspci_graphics(text):
+    """Return the first display adapter from `lspci -mm` output."""
+    for line in text.splitlines():
+        try:
+            fields = shlex.split(line)
+        except ValueError:
+            continue
+        if len(fields) < 4:
+            continue
+        device_class = fields[1].lower()
+        if not any(kind in device_class for kind in
+                   ("vga compatible controller", "3d controller",
+                    "display controller")):
+            continue
+        description = " ".join(" ".join(fields[2:4]).split())
+        if description:
+            return description
+    return "Not detected"
+
+
+def parse_unbound_network_controllers(text):
+    """List PCI network controllers which have no kernel driver attached."""
+    missing = []
+    for block in text.strip().split("\n\n"):
+        fields = {}
+        for line in block.splitlines():
+            if ":\t" in line:
+                key, value = line.split(":\t", 1)
+                fields[key.strip().lower()] = " ".join(value.split())
+        device_class = fields.get("class", "").lower()
+        if not any(kind in device_class for kind in
+                   ("ethernet controller", "network controller")):
+            continue
+        if fields.get("driver"):
+            continue
+        name = " ".join(part for part in
+                        (fields.get("vendor", ""), fields.get("device", ""))
+                        if part).strip()
+        missing.append("%s · no driver bound" % (name or fields.get("slot", "PCI adapter")))
+    return missing
+
+
+def parse_ip_addresses(text):
+    """Map interface names to useful addresses from `ip -j address show`."""
+    try:
+        records = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(records, list):
+        return {}
+    result = {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("ifname"), str):
+            continue
+        addresses = []
+        for item in record.get("addr_info", []):
+            if not isinstance(item, dict) or item.get("scope") == "host":
+                continue
+            address = item.get("local")
+            if isinstance(address, str) and address and not address.startswith("fe80:"):
+                prefix = item.get("prefixlen")
+                addresses.append("%s/%s" % (address, prefix) if isinstance(prefix, int)
+                                 else address)
+        if addresses:
+            result[record["ifname"]] = addresses[:2]
+    return result
+
+
+def format_network_adapter(name, wireless, driver, state, speed, addresses=None):
+    """Format a bound Linux network interface for the About dialog."""
+    kind = "Wi-Fi" if wireless else "Ethernet"
+    parts = [name, kind, driver or "driver unknown"]
+    if state:
+        parts.append("connected" if state == "up" else state)
+    try:
+        mbps = int(speed)
+    except (TypeError, ValueError):
+        mbps = 0
+    if mbps > 0:
+        parts.append("%g Gb/s" % (mbps / 1000.0) if mbps >= 1000
+                     else "%d Mb/s" % mbps)
+    if addresses:
+        parts.append(", ".join(addresses))
+    return " · ".join(parts)
+
+
+def network_adapter_info(root="/sys/class/net", lspci_text=None, address_text=None):
+    """Collect interface/driver/link details once, without starting a monitor."""
+    adapters = []
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        names = []
+    if address_text is None:
+        address_text = run(["ip", "-j", "address", "show"], timeout=3)
+    addresses = parse_ip_addresses(address_text or "")
+    for name in names:
+        if name == "lo":
+            continue
+        base = os.path.join(root, name)
+        driver_link = os.path.join(base, "device", "driver")
+        driver = (os.path.basename(os.path.realpath(driver_link))
+                  if os.path.exists(driver_link) else "")
+        state = _read_local(os.path.join(base, "operstate")).strip().lower()
+        if state not in ("up", "down", "dormant", "lowerlayerdown"):
+            state = ""
+        speed = _read_local(os.path.join(base, "speed")).strip()
+        adapters.append(format_network_adapter(
+            name, os.path.isdir(os.path.join(base, "wireless")),
+            driver, state, speed, addresses.get(name),
+        ))
+
+    if lspci_text is None:
+        # Verbose machine format is block-oriented (Class/Vendor/Device/Driver)
+        # and therefore safe to parse even when names contain punctuation.
+        lspci_text = run(["lspci", "-Dkvmm"], timeout=3)
+    adapters.extend(parse_unbound_network_controllers(lspci_text or ""))
+    return "\n".join(adapters) if adapters else "No adapters detected"
+
+
+def _read_local(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def hardware_info():
+    """Collect a small, static local snapshot once per manager process."""
+    global _HARDWARE_CACHE
+    if _HARDWARE_CACHE is None:
+        _HARDWARE_CACHE = {
+            "Architecture": platform.machine() or "Unknown",
+            "Processor": parse_cpu_info(_read_local("/proc/cpuinfo"), os.cpu_count()),
+            "Memory": parse_meminfo(_read_local("/proc/meminfo")),
+            "Graphics": parse_lspci_graphics(run(["lspci", "-mm"], timeout=3)),
+            "Network": network_adapter_info(),
+        }
+    return _HARDWARE_CACHE.copy()
+
+
 def labelled(text, css_class):
     label = Gtk.Label(label=text, xalign=0)
     label.get_style_context().add_class(css_class)
@@ -105,6 +304,81 @@ def button(text, css_classes, handler):
         btn.get_style_context().add_class(cls)
     btn.connect("clicked", handler)
     return btn
+
+
+class AboutDialog(Gtk.Dialog):
+    """Product, support, and static device information in one calm view."""
+    def __init__(self, parent, info, hardware):
+        title = product_title(info)
+        super().__init__(title="About %s" % title, transient_for=parent, modal=True)
+        self.set_default_size(680, -1)
+        self.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.set_default_response(Gtk.ResponseType.CLOSE)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                          margin_start=24, margin_end=24,
+                          margin_top=20, margin_bottom=16)
+        content.pack_start(labelled(title, "tc-about-title"), False, False, 0)
+
+        intro = labelled(
+            "A focused Debian appliance for RDP, RemoteApp, and VNC sessions.",
+            "tc-sub",
+        )
+        intro.set_line_wrap(True)
+        content.pack_start(intro, False, False, 0)
+
+        grid = Gtk.Grid(row_spacing=8, column_spacing=18, margin_top=4)
+        grid.set_hexpand(True)
+        content.pack_start(grid, False, False, 0)
+
+        row = 0
+
+        def section(text):
+            nonlocal row
+            label = labelled(text.upper(), "tc-about-section")
+            grid.attach(label, 0, row, 2, 1)
+            row += 1
+
+        def detail(key, value):
+            nonlocal row
+            key_label = labelled(key, "tc-about-key")
+            key_label.set_width_chars(13)
+            value_label = labelled(value or "Unknown", "tc-about-value")
+            value_label.set_selectable(True)
+            value_label.set_ellipsize(Pango.EllipsizeMode.NONE)
+            value_label.set_line_wrap(True)
+            value_label.set_max_width_chars(58)
+            value_label.set_hexpand(True)
+            grid.attach(key_label, 0, row, 1, 1)
+            grid.attach(value_label, 1, row, 1, 1)
+            row += 1
+
+        section("Release")
+        detail("Version", info.get("version", "Unknown"))
+        detail("System", info.get("base", "Unknown"))
+        detail("Kernel", info.get("kernel") or platform.release())
+        freerdp = (info.get("freerdp") or "Unknown").split("+")[0]
+        detail("FreeRDP", freerdp)
+
+        section("This device")
+        for key in ("Architecture", "Processor", "Memory", "Graphics", "Network"):
+            detail(key, hardware.get(key, "Unknown"))
+
+        section("Project and support")
+        link = Gtk.LinkButton.new_with_label(GITHUB_URL, GITHUB_URL)
+        link.set_halign(Gtk.Align.START)
+        grid.attach(Gtk.Label(label="GitHub", xalign=0), 0, row, 1, 1)
+        grid.attach(link, 1, row, 1, 1)
+
+        privacy = labelled(
+            "Hardware is read locally once when About opens. Nothing is sent.",
+            "tc-sub",
+        )
+        privacy.set_line_wrap(True)
+        content.pack_start(privacy, False, False, 0)
+
+        self.get_content_area().add(content)
+        self.show_all()
 
 
 # ------------------------------------------------------- credential prompt ---
@@ -167,9 +441,10 @@ class CredentialDialog(Gtk.Dialog):
 # --------------------------------------------------------------- main window -
 class ThinClient(Gtk.Window):
     def __init__(self):
-        super().__init__(title="ThinClient")
+        info = build_info()
+        super().__init__(title=product_title(info))
         self.cfg = tcconfig.load()
-        self.info = build_info()
+        self.info = info
         self.session_active = False
         self.cancel_reconnect = False
         self._countdown_id = None
@@ -217,7 +492,7 @@ class ThinClient(Gtk.Window):
         box.get_style_context().add_class("tc-header")
 
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        left.pack_start(labelled(self.info.get("name", "ThinClient"), "tc-title"), False, False, 0)
+        left.pack_start(labelled(product_title(self.info), "tc-title"), False, False, 0)
         self.subtitle = labelled("", "tc-sub")
         left.pack_start(self.subtitle, False, False, 0)
         box.pack_start(left, True, True, 0)
@@ -243,6 +518,7 @@ class ThinClient(Gtk.Window):
         bar.pack_start(button("Network", ["tc-btn"], self.on_network), False, False, 0)
         self.terminal_btn = button("Terminal", ["tc-btn"], self.on_terminal)
         bar.pack_start(self.terminal_btn, False, False, 0)
+        bar.pack_start(button("About", ["tc-btn"], self.on_about), False, False, 0)
         bar.pack_end(button("Shut Down", ["tc-btn", "tc-danger"],
                             lambda *_: self.power_off("poweroff")), False, False, 0)
         bar.pack_end(button("Restart", ["tc-btn"],
@@ -346,6 +622,18 @@ class ThinClient(Gtk.Window):
         ctx.remove_class("tc-status-bad")
         ctx.add_class("tc-status-bad" if bad else "tc-status")
         self.status.set_text(text)
+
+    def on_about(self, *_):
+        """Show release, support, and cached local hardware information."""
+        dialog = None
+        try:
+            dialog = AboutDialog(self, self.info, hardware_info())
+            dialog.run()
+        except Exception as exc:                     # noqa: BLE001 - last resort
+            self.set_status("Could not show About: %s" % exc, bad=True)
+        finally:
+            if dialog is not None:
+                dialog.destroy()
 
     # ------------------------------------------------------------ session ---
     def start_session(self, conn=None):
@@ -653,7 +941,12 @@ class ThinClient(Gtk.Window):
             if not self.authorised():
                 return
             from settings import NetworkDialog       # noqa: WPS433
-            dialog = NetworkDialog(self)
+            selected = self.selected_connection()
+            connections = list(self.cfg.get("connections", []))
+            if selected in connections:
+                connections.remove(selected)
+                connections.insert(0, selected)
+            dialog = NetworkDialog(self, connections)
             dialog.run()
             dialog.destroy()
             self.refresh_status()

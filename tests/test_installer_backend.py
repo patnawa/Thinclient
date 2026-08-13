@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import types
+import tempfile
 import unittest
 from unittest import mock
 
@@ -72,6 +73,27 @@ class InstallOrdering(unittest.TestCase):
             with self.assertRaisesRegex(tc_install.InstallError, "unsafe target"):
                 tc_install.install("/dev/sda1")
         partition.assert_not_called()
+
+
+class SeedConfig(unittest.TestCase):
+    def test_internal_install_carries_public_authorization_not_host_keys(self):
+        fake_tcconfig = types.SimpleNamespace(load=lambda: {
+            "device": {}, "connections": [],
+        })
+        with tempfile.TemporaryDirectory() as destination, \
+                mock.patch.object(tc_install.tempfile, "mkdtemp",
+                                  return_value=destination), \
+                mock.patch.object(tc_install, "run", return_value=completed()), \
+                mock.patch.dict(tc_install.sys.modules, {"tcconfig": fake_tcconfig}), \
+                mock.patch.object(tc_install.os.path, "isfile", return_value=True), \
+                mock.patch.object(tc_install.os.path, "islink", return_value=False), \
+                mock.patch.object(tc_install.shutil, "copyfile") as copyfile:
+            tc_install.seed_config("/dev/sda")
+
+        copyfile.assert_called_once_with(
+            "/run/thinclient-support/user/authorized_keys",
+            str(Path(destination) / "support" / "authorized_keys"),
+        )
 
 
 if __name__ == "__main__":

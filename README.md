@@ -8,7 +8,7 @@
 approved connections, and gets out of the user's way.</p>
 
 <p>
-  <a href="build/config.sh"><img alt="Release 1.1" src="https://img.shields.io/badge/release-1.1-3478f6?style=flat-square"></a>
+  <a href="build/config.sh"><img alt="Release 1.2" src="https://img.shields.io/badge/release-1.2-3478f6?style=flat-square"></a>
   <a href="https://www.debian.org/"><img alt="Debian 13" src="https://img.shields.io/badge/Debian-13%20trixie-a81d33?style=flat-square&amp;logo=debian&amp;logoColor=white"></a>
   <a href="https://www.freerdp.com/"><img alt="FreeRDP 3" src="https://img.shields.io/badge/FreeRDP-3-2b6cb0?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22a06b?style=flat-square"></a>
@@ -27,7 +27,7 @@ approved connections, and gets out of the user's way.</p>
 
 ![ThinClient connection manager showing RDP and RemoteApp entries](docs/images/connection-manager.png)
 
-<p align="center"><sub>The connection manager from the verified 1.1 build.</sub></p>
+<p align="center"><sub>The connection manager from the verified 1.2 build.</sub></p>
 
 ThinClient boots from USB, an internal disk, or PXE. Its operating system lives
 in a read-only squashfs with ephemeral runtime state, so a fleet returns to the
@@ -45,6 +45,8 @@ power on ──▶ BIOS / UEFI / Secure Boot ──▶ connection manager ──
 | Capability | What you get |
 |---|---|
 | Appliance experience | Full-screen GTK connection picker with optional kiosk auto-connect; no desktop shell or application menu. |
+| Local identity | Versioned About view with static CPU, memory, graphics, network-adapter/driver details, and the GitHub project URL. |
+| Guided network test | Copyable, credential-free route, DNS, TCP, RDP, and VNC preflight from the Network window. |
 | Windows-ready sessions | FreeRDP 3, RemoteApp, RD Gateway, NLA/TLS, Kerberos preparation, multi-monitor, dynamic resolution, and reconnect policy. |
 | Device redirection | Audio output, microphone, clipboard, printers, smart cards, USB storage, and optional raw USB redirection. |
 | Flexible deployment | One hybrid image for legacy BIOS, UEFI, and Secure Boot; install locally or boot a diskless fleet over PXE. |
@@ -63,7 +65,7 @@ sudo bash build/build.sh
 sudo bash build/verify-all.sh
 ```
 
-The result is `out/thinclient-amd64-1.1.iso`. See [Building](#building) for host
+The result is `out/thinclient-amd64-1.2.iso`. See [Building](#building) for host
 prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 [internal disk](#installing-to-a-clients-internal-disk), or
 [PXE](#deploying-by-pxe) deployment.
@@ -87,15 +89,15 @@ prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 | RDP client | FreeRDP 3 (`xfreerdp3`) |
 | VNC client | TigerVNC (`xtigervncviewer`), optional via `INCLUDE_VNC` |
 | Graphics | X11 + Openbox, no desktop environment |
-| UI | GTK3 connection manager (`overlay/usr/local/lib/thinclient/`) |
+| UI | GTK3 connection manager with a versioned About view, static local hardware details, and GitHub link (`overlay/usr/local/lib/thinclient/`) |
 | Audio | PipeWire, playback **and** microphone redirection |
 | Redirection | Multi-monitor, USB storage, smart cards, printers, clipboard |
-| Network | NetworkManager (wired + Wi-Fi), static or DHCP |
+| Network | NetworkManager, static/DHCP, broad wired/USB Ethernet drivers, and Intel/Realtek/Qualcomm/Broadcom/MediaTek Wi-Fi firmware |
 | Boot | Hybrid ISO: BIOS (isolinux) + UEFI (GRUB), Secure Boot via Debian's signed shim |
 
-Nothing else is installed. No browser, no file manager, no desktop menu — the
-Openbox right-click menu is deliberately empty so there is no way out of the
-appliance.
+No general-purpose desktop applications are installed. There is no browser,
+file manager, or desktop menu—the Openbox right-click menu is deliberately empty
+so there is no way out of the appliance.
 
 <details>
 <summary><strong>Settings UI</strong></summary>
@@ -104,6 +106,30 @@ appliance.
 
 Connections, display, redirection, certificate, device, and diagnostic options
 are editable from the administrator-gated interface.
+
+</details>
+
+<details>
+<summary><strong>About and hardware</strong></summary>
+
+![ThinClient About dialog showing version and hardware](docs/images/about.png)
+
+The versioned About view shows static local CPU, memory, graphics, and network
+adapter/driver details, plus the GitHub project URL. Hardware is read only when
+About opens and is cached—there is no background polling. The image has no
+browser, so the URL remains visible and is clickable only where a URI handler
+is available.
+
+</details>
+
+<details>
+<summary><strong>Guided network test</strong></summary>
+
+![ThinClient credential-free network test report](docs/images/network-test.png)
+
+The on-demand test follows the selected connection's real endpoint, including
+its effective port or RD Gateway. It reports the local route, an informational
+gateway ping, DNS, TCP reachability, and a credential-free RDP/VNC handshake.
 
 </details>
 
@@ -138,9 +164,19 @@ You need about 8 GB of free space and an internet connection to `deb.debian.org`
 sudo bash build/build.sh
 ```
 
+Verify the completed artifact before deployment:
+
+```bash
+(cd out && sha256sum -c thinclient-amd64-1.2.iso.sha256)
+```
+
 First build takes 15–30 minutes (it downloads a full Debian base plus packages).
 Later builds reuse the bootstrap and take a few minutes; pass `REBUILD_BASE=1` to
 start clean.
+
+When changing an `INCLUDE_*` feature from `1` to `0`, use `REBUILD_BASE=1` if
+you also need its cached packages removed from the artifact. Service gates still
+honour the flag on an incremental build.
 
 Site-specific values — your real server address, your time zone — go in
 `build/config.local.sh`, which is untracked:
@@ -169,9 +205,13 @@ sudo DEFAULT_SERVER=10.0.0.20 DEFAULT_TIMEZONE=Asia/Bangkok \
 | `INCLUDE_PRINTING` | `1` | CUPS stack for printer redirection (~150 MB) |
 | `INCLUDE_SMARTCARD` | `1` | PC/SC daemon for smart card redirection |
 | `INCLUDE_USB_REDIR` | `1` | Raw USB device redirection |
-| `INCLUDE_WIFI_FIRMWARE` | `0` | Intel/Atheros/Broadcom blobs (~250 MB) |
+| `INCLUDE_WIFI` | `1` | NetworkManager Wi-Fi tools and regulatory database |
+| `INCLUDE_WIFI_FIRMWARE` | `1` | Intel, Qualcomm/Atheros, Broadcom/Cypress, and MediaTek Wi-Fi firmware (~112 MiB in the ISO); core Realtek firmware remains installed for wired NICs |
 | `INCLUDE_SECUREBOOT` | `1` | Signed shim so Secure Boot can stay on |
 | `INCLUDE_ADMIN_TOOLS` | `1` | xterm, ssh client, htop for on-site support |
+| `INCLUDE_SSH_SERVER` | `1` | Install key-only remote support; port 22 stays closed until a key exists on `TCCONF` |
+| `SUPPORT_AUTHORIZED_KEYS_FILE` | empty | Public-key file to seed as `TCCONF/support/authorized_keys` |
+| `TCCONF_SIZE_MB` | `64` | Writable FAT32 settings partition embedded in raw-written USB images (`0` disables it) |
 
 Before building — or after editing anything — run the static checks:
 
@@ -183,7 +223,8 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.1.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.2.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.2.iso.sha256  exact release integrity/identity digest
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -210,11 +251,14 @@ Or individually:
 | Command | What it proves |
 |---|---|
 | `bash build/check.sh` | Syntax: shell, Python, JSON, XML, systemd units |
+| `bash build/imagecheck.sh` | Hybrid MBR/GPT layout, embedded `TCCONF`, and baked configuration |
+| `sudo bash build/networkcheck.sh` | Common Ethernet/USB drivers, initramfs coverage, wireless stack, and firmware |
+| `sudo bash build/supportcheck.sh` | Missing/invalid keys keep SSH closed; valid keys get hardened access and stable identity |
 | `sudo bash build/unittest.sh` | Unit tests for the configuration core (see below) |
 | `sudo bash build/permcheck.sh` | **Runs as the kiosk user**: sudo rules, `/run` writability, save/delete round-trip |
 | `sudo bash build/rdpcheck.sh` | Every FreeRDP option we emit exists in the shipped binary |
 | `sudo bash build/rdpsession-test.sh` | A real RDP session, client taken from the image |
-| `sudo bash build/uitest.sh out/ui.png [settings]` | The GTK screens render |
+| `sudo bash build/uitest.sh out/ui.png [settings\|about\|network-test]` | The GTK screens render |
 | `sudo bash build/boottest.sh bios\|uefi\|secureboot\|debug` | Boots in QEMU, timed screenshots |
 | `sudo bash build/shutdowntest.sh` | Drives the Shut Down button and checks the machine really powers off |
 | `sudo bash build/installtest.sh bios\|uefi` | Installs to a blank virtual disk, removes the ISO, and boots the installed system |
@@ -289,11 +333,13 @@ volume.
 ```
 
 It refuses any disk that is not removable or that holds `C:`, shows the model
-and size before touching it, verifies the stick byte-for-byte against the ISO
-afterwards, and then creates the `TCCONF` partition and seeds `config.json` on
-it. If that last step fails — an isohybrid image leaves the GPT backup header
-at the end of the *image* rather than the disk, which Windows' partition tools
-do not always cope with — run:
+and size before touching it, and verifies the stick byte-for-byte against the
+ISO afterwards. The image already contains a 64 MiB FAT32 `TCCONF` partition,
+seeded with the baked `config.json`; the script assigns it a drive letter when
+Windows permits it. No post-write partitioning is needed.
+
+For an older/custom image that predates embedded persistence, the writer still
+creates `TCCONF` in free space. If that legacy fallback fails, run:
 
 ```powershell
 .\tools\Add-TcconfPartition.ps1 -DiskNumber 4
@@ -303,12 +349,14 @@ which borrows `sgdisk` from WSL, relocates the header and creates the partition
 properly.
 
 [Rufus](https://rufus.ie) also works: select the ISO and choose **DD Image
-mode** when prompted. So does Ventoy if you keep several images on one stick.
+mode** when prompted. Ventoy can boot the ISO, but because it presents the ISO
+as a read-only file, use central configuration rather than expecting its
+embedded `TCCONF` to be writable.
 
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.1.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.2.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -320,23 +368,22 @@ Boot the client from USB. On the boot menu:
 | Safe graphics mode | Blank or corrupted screen on odd hardware. |
 | Diagnostic console | Something is wrong and you need logs and a shell. |
 
-### Making settings survive a reboot
+### Settings persistence is built in
 
-The image is read-only. To let a client keep its own configuration, add a second
-partition to the USB stick **labelled `TCCONF`**, formatted FAT32:
+When the ISO is written raw to a USB stick, its operating system stays read-only
+but partition 3 is a writable FAT32 volume labelled `TCCONF`. The client reads
+`config.json` from it at boot and writes back whenever you save in Settings.
+You can also edit that file from Windows or drop server CA certificates into
+`ca-certificates/`; they are installed at boot.
 
-```bash
-# after dd'ing the ISO, with the stick still at /dev/sdX
-sudo parted /dev/sdX mkpart primary fat32 2GiB 100%
-sudo mkfs.vfat -n TCCONF /dev/sdX3
-```
+The default 64 MiB is deliberately small—it holds configuration and certificates,
+not user files—and adds about 64 MiB to the download. Set `TCCONF_SIZE_MB` at build
+time if a site needs more, or set it to `0` for an optical-only image. Persistence
+requires a raw-written USB/internal installation; an optical disc or ISO mounted
+through a VM/Ventoy remains read-only.
 
-On Windows, use Rufus's "persistent partition" option, or create the partition in
-Disk Management and set its label to `TCCONF`.
-
-The client mounts it at boot, reads `config.json` from it, and writes back to it
-whenever you save in Settings. You can also drop server CA certificates into a
-`ca-certificates/` folder there and they will be installed at boot.
+Raw re-imaging replaces this partition and resets its configuration. Back up
+`config.json`, `ca-certificates/`, and `support/` before writing a newer image.
 
 ---
 
@@ -425,7 +472,7 @@ partitioning, the copy and the bootloader all worked.
 ## Deploying by PXE
 
 Two moving parts: **TFTP** hands the client a bootloader and kernel, **HTTP**
-hands it the 600 MB root filesystem. HTTP is used for the big transfer because
+hands it the roughly 499 MiB root filesystem. HTTP is used for the big transfer because
 TFTP is painfully slow at that size, and because once `filesystem.squashfs` is in
 RAM the client no longer needs the server at all.
 
@@ -483,7 +530,7 @@ WDS's TFTP, Tftpd64, or a Linux host for the file serving.
 
 Both BIOS and UEFI paths are verified end to end by `build/pxetest.sh`. The UEFI
 netboot image is built with the `http` module preloaded, so GRUB pulls the
-kernel and initrd over HTTP rather than TFTP — materially faster for a 54 MB
+kernel and initrd over HTTP rather than TFTP—materially faster for a roughly 56 MiB
 initrd — and the menu carries `set fallback=1`, so if HTTP is unavailable the
 client drops to the TFTP entry by itself instead of sitting at a menu that
 nobody is standing in front of.
@@ -735,6 +782,12 @@ Settings → **Diagnostics** shows the last session's FreeRDP log, the boot
 journal, and current network state. That page answers most support calls without
 anyone needing a shell.
 
+For a quick guided check, open **Network → Test**, choose a configured
+connection, and select **Run Network Test**. It checks the local address,
+route, DNS, target TCP port, and a credential-free RDP/VNC handshake on demand.
+The default-gateway ping is informational rather than a pass/fail gate. The
+copyable support report never includes usernames or passwords.
+
 ### Getting a shell
 
 Three ways, in order of convenience:
@@ -753,6 +806,45 @@ without privilege.
 
 By default the console is locked down (`DontVTSwitch`), so Ctrl+Alt+F1 does
 nothing until you enable it. The Terminal button is the intended route.
+
+### Remote support over SSH
+
+OpenSSH is installed for unattended support but is dormant by default: its
+socket is masked and `ssh.service` cannot start unless the physical `TCCONF`
+partition contains a valid `support/authorized_keys`. Root login, passwords,
+keyboard-interactive authentication, X11, agent forwarding, TCP forwarding,
+and tunnels are all disabled. The dedicated `support` user can inspect the
+journal and network state but has no unrestricted `sudo` access.
+
+Generate a key on the technician's workstation and either seed it while
+building or copy only the `.pub` file onto the USB's `TCCONF` volume:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/thinclient-support
+
+# build/config.local.sh (path is evaluated on the Linux/WSL build host)
+SUPPORT_AUTHORIZED_KEYS_FILE=/root/.ssh/thinclient-support.pub
+
+# After the client boots
+ssh -i ~/.ssh/thinclient-support support@CLIENT_IP
+```
+
+On Windows, copy the public file—not the private key—and use the required
+destination name (replace `E:` with the drive assigned to `TCCONF`):
+
+```powershell
+New-Item -ItemType Directory E:\support -Force
+Copy-Item $HOME\.ssh\thinclient-support.pub E:\support\authorized_keys
+```
+
+On first authorized boot, ThinClient creates a unique SSH host identity and
+keeps it in `TCCONF/support/host-keys/`, so the fingerprint remains stable on
+that client. An internal installation carries the validated public authorization
+but deliberately creates a new host identity. Removing `authorized_keys` and
+rebooting closes port 22 again.
+Anyone who can read the physical USB can also read those host keys, so keep the
+stick controlled; an internal installation is stronger for permanent remote
+support.
 
 ---
 
@@ -784,10 +876,12 @@ that would only walk a domain account towards a lockout).
 | USB stick does not appear in the session | Drive redirection GPO disabled on the server; or the stick is NTFS with a dirty bit — plug it into Windows once. |
 | PXE client stops at "Booting..." | Almost always the HTTP URL. Fetch `filesystem.squashfs` from another machine to confirm the web server is serving it. |
 | PXE UEFI client says "Access denied" or reboots | Secure Boot is on but you handed it the unsigned loader. Use `bootx64.efi`, or turn Secure Boot off. |
-| Settings do not survive reboot | No `TCCONF` partition. The status line after saving says so explicitly. |
+| Settings do not survive reboot | The medium is optical/Ventoy/read-only, or this custom image has no `TCCONF`. Raw-write the standard ISO; its partition 3 is writable persistence. |
+| Wi-Fi adapter is missing | Open About and check **Network**. `no driver bound` means no kernel module attached; inspect `dmesg` for firmware failures, run `build/networkcheck.sh`, and identify PCI/USB hardware with `lspci -nnk` and `lsusb`. |
+| SSH connection is refused | This is the safe default. Put a valid public key at `TCCONF/support/authorized_keys` and reboot; confirm the About/header IP, then use the `support` user. |
 | A button appears to do nothing | Look at the status line at the bottom — every failure is reported there now. If it is silent, `boottest.sh debug` and read `serial.log`. |
 | Restart / Shut Down do nothing | Was a real defect (no `sudo` in the image) fixed in this build. `sudo bash build/permcheck.sh` verifies it. |
-| Keyboard cannot reach the buttons | Tab moves through Connect → Settings → Network → Restart → Shut Down; Enter activates whatever has focus, and only connects when the list has focus. |
+| Keyboard cannot reach the buttons | Tab moves through Connect → Settings → Network → Terminal → About → Restart → Shut Down; Enter activates whatever has focus, and only connects when the list has focus. |
 | Video is sluggish in the session | Check `active driver` in the debug serial log. It should say `modeset`; `vesa` or `fbdev` means KMS did not come up, so try the safe-graphics entry or check the GPU is supported. |
 
 For a shell on a client, boot the **Diagnostic console** entry, or set
@@ -839,3 +933,6 @@ Worth knowing before this goes on a network:
 - The kiosk user is unprivileged. The admin prompt gates Settings, Network, and
   Terminal in the UI; `sudo` is limited to the appliance's power, network,
   configuration, smart-card, and validated installer commands.
+- Remote SSH is key-only through the unprivileged `support` user. With no
+  physical `TCCONF/support/authorized_keys`, no SSH socket listens. Protect the
+  writable partition because it also stores that client's SSH host identity.

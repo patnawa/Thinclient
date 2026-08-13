@@ -5,7 +5,7 @@
 
 # ---------------------------------------------------------------- identity ---
 DISTRO_NAME="${DISTRO_NAME:-ThinClient}"
-DISTRO_VERSION="${DISTRO_VERSION:-1.1}"
+DISTRO_VERSION="${DISTRO_VERSION:-1.2}"
 IMAGE_NAME="${IMAGE_NAME:-thinclient-amd64}"
 
 # ------------------------------------------------------------------- base ----
@@ -29,9 +29,16 @@ INCLUDE_PRINTING="${INCLUDE_PRINTING:-1}"      # CUPS + filters for RDP printer 
 INCLUDE_SMARTCARD="${INCLUDE_SMARTCARD:-1}"    # pcscd for /smartcard
 INCLUDE_USB_REDIR="${INCLUDE_USB_REDIR:-1}"    # libusb + urbdrc for /usb
 INCLUDE_WIFI="${INCLUDE_WIFI:-1}"              # wpa_supplicant + NM wifi support
-INCLUDE_WIFI_FIRMWARE="${INCLUDE_WIFI_FIRMWARE:-0}"  # iwlwifi/atheros blobs (+~250 MB)
+INCLUDE_WIFI_FIRMWARE="${INCLUDE_WIFI_FIRMWARE:-1}"  # Intel/Qualcomm/Broadcom/MediaTek Wi-Fi firmware
 INCLUDE_SECUREBOOT="${INCLUDE_SECUREBOOT:-1}"  # shim+grub signed -> boots with Secure Boot on
 INCLUDE_ADMIN_TOOLS="${INCLUDE_ADMIN_TOOLS:-1}" # xterm, openssh-client, nano for support staff
+INCLUDE_SSH_SERVER="${INCLUDE_SSH_SERVER:-1}"  # key-only support SSH; dormant until a public key exists
+SUPPORT_AUTHORIZED_KEYS_FILE="${SUPPORT_AUTHORIZED_KEYS_FILE:-}" # optional public-key file copied to TCCONF
+
+# A small writable FAT32 partition is appended to the hybrid image. When the
+# image is written raw to USB, settings work immediately without repartitioning.
+# Set to 0 only for optical-only images; FAT32 needs at least 64 MiB here.
+TCCONF_SIZE_MB="${TCCONF_SIZE_MB:-64}"
 
 # ------------------------------------------------------------ squashfs -------
 SQUASH_COMP="${SQUASH_COMP:-zstd}"

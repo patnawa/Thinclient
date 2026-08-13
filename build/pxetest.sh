@@ -8,7 +8,7 @@
 #
 # What this proves:
 #   1. the client gets a DHCP lease and TFTPs pxelinux + kernel + initrd
-#   2. it fetches the 380 MB squashfs over HTTP and runs from RAM
+#   2. it fetches the roughly 499 MiB squashfs over HTTP and runs from RAM
 #   3. it pulls central configuration and uses it in preference to the built-in
 #
 #   sudo bash build/pxetest.sh           # BIOS clients (pxelinux)

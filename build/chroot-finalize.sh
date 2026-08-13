@@ -31,12 +31,45 @@ log "checking the overlay"
 for f in /usr/local/bin/tc-session /usr/local/bin/tc-connect \
          /usr/local/sbin/tc-fetch-config /usr/local/sbin/tc-save-config \
          /usr/local/sbin/tc-apply-config /usr/local/sbin/tc-automount \
+         /usr/local/sbin/tc-prepare-support \
          /usr/local/sbin/tc-install /usr/local/sbin/tc-diag \
          /usr/local/lib/thinclient/manager.py /usr/local/lib/thinclient/settings.py \
+         /usr/local/lib/thinclient/networkdiag.py \
+         /usr/local/lib/thinclient/rdpprobe.py \
          /usr/local/lib/thinclient/installer.py \
          /usr/local/lib/thinclient/tcconfig.py /etc/thinclient/config.json; do
   [ -e "$f" ] || { echo "FATAL: missing $f" >&2; exit 1; }
 done
+
+# Every passwordless helper and every root-consumed policy must be unreachable
+# through a group/world-writable path. This catches mode leakage from DrvFS,
+# where repository directories commonly appear as 0777 to a WSL build.
+python3 - <<'PYEOF'
+import os
+import stat
+
+paths = (
+    "/usr/local/sbin/tc-save-config",
+    "/usr/local/sbin/tc-apply-config",
+    "/usr/local/sbin/tc-fetch-config",
+    "/usr/local/sbin/tc-install",
+    "/etc/NetworkManager/dispatcher.d/50-thinclient",
+    "/etc/ssh/sshd_config.d/10-thinclient-support.conf",
+    "/etc/systemd/system/ssh.service.d/10-thinclient-support.conf",
+)
+for path in paths:
+    if not os.path.exists(path):
+        continue
+    current = "/"
+    for part in path.strip("/").split("/"):
+        current = os.path.join(current, part)
+        info = os.stat(current)
+        if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise SystemExit(
+                "FATAL: replaceable privileged path component: %s (%o uid=%d)"
+                % (current, stat.S_IMODE(info.st_mode), info.st_uid)
+            )
+PYEOF
 
 # The installer partitions disks and installs bootloaders; without these it
 # would fail halfway through, having already wiped the target.
@@ -51,6 +84,7 @@ done
 for f in /usr/local/bin/tc-session /usr/local/bin/tc-connect \
          /usr/local/sbin/tc-fetch-config /usr/local/sbin/tc-save-config \
          /usr/local/sbin/tc-apply-config /usr/local/sbin/tc-automount \
+         /usr/local/sbin/tc-prepare-support \
          /etc/NetworkManager/dispatcher.d/50-thinclient; do
   [ -x "$f" ] || { echo "FATAL: $f is not executable" >&2; exit 1; }
 done
@@ -59,11 +93,14 @@ done
 python3 -m py_compile /usr/local/lib/thinclient/tcconfig.py \
                       /usr/local/lib/thinclient/manager.py \
                       /usr/local/lib/thinclient/settings.py \
+                      /usr/local/lib/thinclient/networkdiag.py \
+                      /usr/local/lib/thinclient/rdpprobe.py \
                       /usr/local/sbin/tc-apply-config \
                       /usr/local/bin/tc-connect
 python3 -c 'import json; json.load(open("/etc/thinclient/config.json"))'
 for s in /usr/local/bin/tc-session /usr/local/sbin/tc-fetch-config \
          /usr/local/sbin/tc-save-config /usr/local/sbin/tc-automount \
+         /usr/local/sbin/tc-prepare-support \
          /etc/NetworkManager/dispatcher.d/50-thinclient; do
   sh -n "$s" || { echo "FATAL: shell syntax error in $s" >&2; exit 1; }
 done
@@ -75,6 +112,37 @@ python3 -c 'import gi; gi.require_version("Gtk","3.0"); from gi.repository impor
 
 command -v xfreerdp3 >/dev/null || command -v xfreerdp >/dev/null \
   || { echo "FATAL: no FreeRDP client installed" >&2; exit 1; }
+
+if [ "${INCLUDE_SSH_SERVER:-0}" = "1" ]; then
+  command -v sshd >/dev/null \
+    || { echo "FATAL: INCLUDE_SSH_SERVER=1 but sshd is missing" >&2; exit 1; }
+  id support >/dev/null 2>&1 \
+    || { echo "FATAL: remote-support account is missing" >&2; exit 1; }
+  [ -f /etc/ssh/sshd_config.d/10-thinclient-support.conf ] \
+    || { echo "FATAL: hardened support sshd configuration is missing" >&2; exit 1; }
+  [ -f /etc/systemd/system/ssh.service.d/10-thinclient-support.conf ] \
+    || { echo "FATAL: conditional ssh.service configuration is missing" >&2; exit 1; }
+  [ "$(stat -c '%a:%u' /etc/ssh/sshd_config.d/10-thinclient-support.conf)" = "644:0" ] \
+    || { echo "FATAL: sshd support policy must be 0644 and root-owned" >&2; exit 1; }
+  [ "$(stat -c '%a:%u' /etc/systemd/system/ssh.service.d)" = "755:0" ] \
+    || { echo "FATAL: ssh.service drop-in directory must be 0755 and root-owned" >&2; exit 1; }
+  [ "$(stat -c '%a:%u' /etc/systemd/system/ssh.service.d/10-thinclient-support.conf)" = "644:0" ] \
+    || { echo "FATAL: ssh.service support gate must be 0644 and root-owned" >&2; exit 1; }
+  [ "$(systemctl is-enabled ssh.socket 2>/dev/null || true)" = "masked" ] \
+    || { echo "FATAL: ssh.socket could expose port 22 without a support key" >&2; exit 1; }
+  [ "$(systemctl is-enabled sshd-keygen.service 2>/dev/null || true)" = "masked" ] \
+    || { echo "FATAL: sshd-keygen could create an unapproved boot identity" >&2; exit 1; }
+  [ "$(systemctl is-enabled ssh.service 2>/dev/null || true)" = "enabled" ] \
+    || { echo "FATAL: conditional ssh.service is not enabled" >&2; exit 1; }
+  install -d -m 0755 /run/sshd
+  ssh-keygen -A >/dev/null
+  sshd -t || { echo "FATAL: hardened sshd configuration is invalid" >&2; exit 1; }
+elif command -v sshd >/dev/null 2>&1; then
+  [ "$(systemctl is-enabled ssh.service 2>/dev/null || true)" = "masked" ] \
+    || { echo "FATAL: cached ssh.service is not masked in an SSH-disabled build" >&2; exit 1; }
+  [ "$(systemctl is-enabled ssh.socket 2>/dev/null || true)" = "masked" ] \
+    || { echo "FATAL: cached ssh.socket is not masked in an SSH-disabled build" >&2; exit 1; }
+fi
 
 # --------------------------------------------------- privilege plumbing ------
 # Every privileged action in the UI goes through sudo. minbase does not ship it,

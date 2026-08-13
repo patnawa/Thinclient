@@ -51,23 +51,128 @@ if ! python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$TMP" 2>/dev/nu
     exit 2
 fi
 
-DEV="$(blkid -L TCCONF 2>/dev/null || true)"
-if [ -z "$DEV" ]; then
-    echo "no TCCONF partition on this device" >&2
-    exit 3
-fi
+# BEGIN TCCONF_DEVICE_RESOLVER
+# Keep this resolver identical in both configuration scripts. A label can occur
+# on more than one attached drive, so never let blkid choose an arbitrary one.
+tcconf_labelled_device() {
+    [ -n "${1:-}" ] \
+        && [ "$(blkid -s LABEL -o value "$1" 2>/dev/null)" = "TCCONF" ] \
+        && [ "$(blkid -s TYPE -o value "$1" 2>/dev/null)" = "vfat" ]
+}
+
+tcconf_canonical_device() {
+    tc_resolved="$(readlink -f "$1" 2>/dev/null || true)"
+    if [ -n "$tc_resolved" ]; then
+        printf '%s\n' "$tc_resolved"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+tcconf_mounted_device() {
+    tc_source="$(findmnt -rn -o SOURCE --target "$1" 2>/dev/null | sed -n '1p')"
+    [ -n "$tc_source" ] && tcconf_labelled_device "$tc_source" || return 1
+    tcconf_canonical_device "$tc_source"
+}
+
+tcconf_whole_disk() {
+    tc_current="$(tcconf_canonical_device "$1")"
+    tc_hops=0
+    while [ "$tc_hops" -lt 16 ]; do
+        tc_parent="$(lsblk -dnro PKNAME "$tc_current" 2>/dev/null | sed -n '1p')"
+        if [ -z "$tc_parent" ]; then
+            printf '%s\n' "$tc_current"
+            return 0
+        fi
+        case "$tc_parent" in
+            /*) tc_current="$tc_parent" ;;
+            *)  tc_current="/dev/$tc_parent" ;;
+        esac
+        tc_current="$(tcconf_canonical_device "$tc_current")"
+        tc_hops=$((tc_hops + 1))
+    done
+    return 1
+}
+
+tcconf_discover_device() {
+    tc_candidates="$(blkid -t LABEL=TCCONF -o device 2>/dev/null || true)"
+    [ -n "$tc_candidates" ] || return 1
+
+    tc_boot_source="$(findmnt -rn -o SOURCE --target /run/live/medium 2>/dev/null | sed -n '1p')"
+    tc_boot_disk=""
+    if [ -n "$tc_boot_source" ]; then
+        tc_boot_disk="$(tcconf_whole_disk "$tc_boot_source" 2>/dev/null || true)"
+    fi
+
+    tc_fallback=""
+    for tc_candidate in $tc_candidates; do
+        tcconf_labelled_device "$tc_candidate" || continue
+        tc_candidate="$(tcconf_canonical_device "$tc_candidate")"
+        [ -n "$tc_fallback" ] || tc_fallback="$tc_candidate"
+        if [ -n "$tc_boot_disk" ] \
+                && [ "$(tcconf_whole_disk "$tc_candidate" 2>/dev/null || true)" = "$tc_boot_disk" ]; then
+            printf '%s\n' "$tc_candidate"
+            return 0
+        fi
+    done
+
+    [ -n "$tc_fallback" ] || return 1
+    printf '%s\n' "$tc_fallback"
+}
+
+tcconf_mount_options() {
+    tc_mode="$1"
+    tc_device="$2"
+    [ "$(blkid -s TYPE -o value "$tc_device" 2>/dev/null)" = "vfat" ] || return 1
+    # FAT has no Unix ownership or mode bits. These masks make config, CA files,
+    # support keys, and host private keys root-only while the UI continues to
+    # read/write config through its sudo helpers.
+    printf '%s\n' "$tc_mode,noatime,nosuid,nodev,noexec,uid=0,gid=0,fmask=0177,dmask=0077"
+}
+
+tcconf_secure_mount() {
+    tc_mode="$1" tc_device="$2" tc_target="$3"
+    tc_options="$(tcconf_mount_options "$tc_mode" "$tc_device")" || return 1
+    mount -o "$tc_options" "$tc_device" "$tc_target"
+}
+
+tcconf_secure_remount() {
+    tc_mode="$1" tc_device="$2" tc_target="$3"
+    tc_options="$(tcconf_mount_options "$tc_mode" "$tc_device")" || return 1
+    mount -o "remount,$tc_options" "$tc_target"
+}
+# END TCCONF_DEVICE_RESOLVER
 
 if mountpoint -q "$MEDIA"; then
-    mounted="$(findmnt -no SOURCE --target "$MEDIA" 2>/dev/null || true)"
-    if [ "$(readlink -f "$mounted" 2>/dev/null)" != "$(readlink -f "$DEV" 2>/dev/null)" ]; then
-        echo "$MEDIA is mounted from a different device" >&2
+    # Once mounted, this source is authoritative. Do not switch to a different
+    # same-labelled device merely because blkid happens to list it first.
+    DEV="$(tcconf_mounted_device "$MEDIA" 2>/dev/null || true)"
+    if [ -z "$DEV" ]; then
+        echo "$MEDIA is not mounted from a TCCONF partition" >&2
         exit 4
     fi
-elif ! mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null; then
-    echo "could not mount the TCCONF partition read-write" >&2
+else
+    DEV="$(tcconf_discover_device 2>/dev/null || true)"
+    if [ -z "$DEV" ]; then
+        echo "no TCCONF partition on this device" >&2
+        exit 3
+    fi
+    # Honour a mount that appeared after discovery instead of covering it.
+    if mountpoint -q "$MEDIA"; then
+        DEV="$(tcconf_mounted_device "$MEDIA" 2>/dev/null || true)"
+        if [ -z "$DEV" ]; then
+            echo "$MEDIA is not mounted from a TCCONF partition" >&2
+            exit 4
+        fi
+    elif ! tcconf_secure_mount rw "$DEV" "$MEDIA" 2>/dev/null; then
+        echo "could not mount the TCCONF partition read-write" >&2
+        exit 4
+    fi
+fi
+if ! tcconf_secure_remount rw "$DEV" "$MEDIA" 2>/dev/null; then
+    echo "could not secure the TCCONF partition read-write" >&2
     exit 4
 fi
-mount -o remount,rw "$MEDIA" 2>/dev/null || true
 
 # Create the replacement on the TCCONF filesystem itself, validate the copied
 # bytes, then rename it over config.json.  mktemp uses O_EXCL, and rename

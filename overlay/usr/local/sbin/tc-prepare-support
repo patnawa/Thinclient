@@ -1,0 +1,166 @@
+#!/bin/sh
+# Enable key-only remote support when TCCONF explicitly provides a public key.
+# Host keys are unique per client and persist on that same writable partition.
+set -eu
+
+MEDIA_READY="${1:-0}"
+SUPPORT_READY=0
+
+MEDIA=/run/thinclient/media
+RUN_ROOT=/run/thinclient-support
+RUN="$RUN_ROOT/user"
+PERSIST="$MEDIA/support"
+AUTH_SOURCE="$PERSIST/authorized_keys"
+
+rm -rf "$RUN_ROOT"
+install -d -m 0755 -o root -g root "$RUN_ROOT"
+
+stop_runtime_ssh() {
+    # Never wait synchronously for a service that Requires/After tc-config:
+    # this helper itself runs inside tc-config during boot. A no-block job is
+    # safe there and still closes a live listener on a later dispatcher reload.
+    /usr/bin/systemctl stop --no-block ssh.service 2>/dev/null || true
+}
+
+cleanup_failure() {
+    [ "$SUPPORT_READY" = "1" ] && return 0
+    rm -rf "$RUN_ROOT" 2>/dev/null || true
+    stop_runtime_ssh
+}
+trap cleanup_failure EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+disable_support() {
+    rm -rf "$RUN"
+    stop_runtime_ssh
+    SUPPORT_READY=1
+    exit 0
+}
+
+[ "$MEDIA_READY" = "1" ] || disable_support
+
+# TCCONF is normally FAT32, but never assume a labelled removable filesystem
+# is honest. Keep every privileged read/write below the actual media directory
+# and reject symlinked parents before touching persistent host-key paths.
+[ -d "$MEDIA" ] && [ ! -L "$MEDIA" ] || disable_support
+MEDIA_REAL="$(readlink -f "$MEDIA" 2>/dev/null || true)"
+[ -n "$MEDIA_REAL" ] || disable_support
+[ -d "$PERSIST" ] && [ ! -L "$PERSIST" ] || disable_support
+PERSIST_REAL="$(readlink -f "$PERSIST" 2>/dev/null || true)"
+case "$PERSIST_REAL" in
+    "$MEDIA_REAL"/*) ;;
+    *) echo "tc-prepare-support: unsafe support directory; SSH stays disabled" >&2
+       disable_support ;;
+esac
+[ "$(stat -c %u "$PERSIST" 2>/dev/null)" = "0" ] \
+    && [ -z "$(find "$PERSIST" -maxdepth 0 -perm /022 -print 2>/dev/null)" ] || {
+    echo "tc-prepare-support: writable support directory; SSH stays disabled" >&2
+    disable_support
+}
+
+[ -f "$AUTH_SOURCE" ] && [ ! -L "$AUTH_SOURCE" ] || disable_support
+AUTH_REAL="$(readlink -f "$AUTH_SOURCE" 2>/dev/null || true)"
+[ "$AUTH_REAL" = "$PERSIST_REAL/authorized_keys" ] || disable_support
+[ "$(stat -c %u "$AUTH_SOURCE" 2>/dev/null)" = "0" ] \
+    && [ -z "$(find "$AUTH_SOURCE" -maxdepth 0 -perm /022 -print 2>/dev/null)" ] \
+    || disable_support
+AUTH_SIZE="$(stat -c %s "$AUTH_SOURCE" 2>/dev/null || true)"
+case "$AUTH_SIZE" in
+    ''|*[!0-9]*) disable_support ;;
+esac
+[ "$AUTH_SIZE" -le 1048576 ] || {
+    echo "tc-prepare-support: authorized_keys is unreasonably large; SSH stays disabled" >&2
+    disable_support
+}
+
+valid_keys() {
+    /usr/bin/python3 - "$1" <<'PYEOF'
+import base64, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+valid = 0
+try:
+    lines = path.read_text(encoding="utf-8").splitlines()
+except (OSError, UnicodeError):
+    raise SystemExit(1)
+for line in lines:
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    fields = line.split()
+    if len(fields) < 2 or not fields[0].startswith(("ssh-", "ecdsa-", "sk-")):
+        raise SystemExit(1)
+    try:
+        base64.b64decode(fields[1], validate=True)
+    except (ValueError, TypeError):
+        raise SystemExit(1)
+    valid += 1
+raise SystemExit(0 if valid else 1)
+PYEOF
+}
+
+if ! valid_keys "$AUTH_SOURCE"; then
+    echo "tc-prepare-support: invalid support/authorized_keys; SSH stays disabled" >&2
+    disable_support
+fi
+
+# sshd reads this as root before dropping privileges. Keep both path and file
+# root-owned so an authenticated support session cannot authorize another key.
+install -d -m 0700 -o root -g root "$RUN"
+install -m 0600 -o root -g root "$AUTH_SOURCE" "$RUN/authorized_keys"
+
+# Host keys on TCCONF make the server fingerprint stable across reboots. Create
+# them only after validated authorization exists, so a normal kiosk never pays
+# for key generation and never exposes sshd.
+HOST_KEYS="$PERSIST/host-keys"
+if [ -e "$HOST_KEYS" ] && { [ ! -d "$HOST_KEYS" ] || [ -L "$HOST_KEYS" ]; }; then
+    echo "tc-prepare-support: unsafe host-key directory; SSH stays disabled" >&2
+    disable_support
+fi
+install -d -m 0700 "$HOST_KEYS" 2>/dev/null || {
+    echo "tc-prepare-support: TCCONF is read-only; SSH stays disabled" >&2
+    disable_support
+}
+[ ! -L "$HOST_KEYS" ] && [ "$(readlink -f "$HOST_KEYS" 2>/dev/null)" = "$PERSIST_REAL/host-keys" ] \
+    && [ "$(stat -c %u "$HOST_KEYS" 2>/dev/null)" = "0" ] \
+    && [ -z "$(find "$HOST_KEYS" -maxdepth 0 -perm /022 -print 2>/dev/null)" ] || {
+    echo "tc-prepare-support: writable host-key directory; SSH stays disabled" >&2
+    disable_support
+}
+for kind in ed25519 rsa; do
+    key="$HOST_KEYS/ssh_host_${kind}_key"
+    if [ -e "$key" ] && { [ ! -f "$key" ] || [ -L "$key" ]; }; then
+        echo "tc-prepare-support: unsafe host key; SSH stays disabled" >&2
+        disable_support
+    fi
+    if [ ! -s "$key" ]; then
+        tmp_dir="$(mktemp -d "$HOST_KEYS/.new.XXXXXX")" || disable_support
+        tmp="$tmp_dir/key"
+        /usr/bin/ssh-keygen -q -N '' -t "$kind" -f "$tmp" || {
+            rm -rf "$tmp_dir"; disable_support;
+        }
+        chmod 0600 "$tmp" 2>/dev/null || true
+        mv -f "$tmp" "$key"
+        mv -f "$tmp.pub" "$key.pub"
+        rmdir "$tmp_dir" 2>/dev/null || true
+    fi
+    key_size="$(stat -c %s "$key" 2>/dev/null || true)"
+    [ -f "$key" ] && [ ! -L "$key" ] && [ "$(stat -c %u "$key" 2>/dev/null)" = "0" ] \
+        && [ -z "$(find "$key" -maxdepth 0 -perm /077 -print 2>/dev/null)" ] \
+        && [ "${key_size:-999999}" -le 65536 ] \
+        && /usr/bin/ssh-keygen -y -f "$key" >/dev/null 2>&1 \
+        || { echo "tc-prepare-support: unsafe host key; SSH stays disabled" >&2; disable_support; }
+    install -m 0600 "$key" "/etc/ssh/ssh_host_${kind}_key"
+    /usr/bin/ssh-keygen -y -f "$key" > "/etc/ssh/ssh_host_${kind}_key.pub"
+    chmod 0644 "/etc/ssh/ssh_host_${kind}_key.pub"
+done
+
+printf 'enabled\n' > "$RUN_ROOT/enabled"
+chmod 0600 "$RUN_ROOT/enabled"
+SUPPORT_READY=1
+echo "tc-prepare-support: key-only SSH enabled for user support"
+
+# At boot this queues ssh behind tc-config without waiting on our own unit. On a
+# later NetworkManager refresh the same non-blocking job opens support promptly.
+/usr/bin/systemctl start --no-block ssh.service 2>/dev/null || true

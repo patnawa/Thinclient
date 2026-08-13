@@ -23,6 +23,169 @@ else:
 
 @unittest.skipUnless(manager is not None, "GTK manager dependencies are not installed")
 class ManagerState(unittest.TestCase):
+    def test_product_title_includes_the_build_version(self):
+        self.assertEqual(
+            "ThinClient 1.2",
+            manager.product_title({"name": "ThinClient", "version": "1.2"}),
+        )
+
+    def test_product_title_has_clean_fallbacks(self):
+        self.assertEqual(
+            "ThinClient",
+            manager.product_title({"name": " ThinClient ", "version": "  "}),
+        )
+        self.assertEqual("ThinClient", manager.product_title({}))
+
+    def test_cpu_info_is_condensed_and_includes_logical_cpu_count(self):
+        text = """\
+processor   : 0
+model name  : Intel(R)   Core(TM) i5-8250U CPU @ 1.60GHz
+processor   : 1
+model name  : Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz
+"""
+
+        self.assertEqual(
+            "Intel(R) Core(TM) i5-8250U CPU @ 1.60GHz · 8 logical CPUs",
+            manager.parse_cpu_info(text, cpu_count=8),
+        )
+
+    def test_cpu_info_falls_back_when_no_model_is_present(self):
+        self.assertEqual(
+            "Unknown",
+            manager.parse_cpu_info("processor : 0\nflags : fpu sse\n", cpu_count=1),
+        )
+
+    def test_meminfo_reports_total_memory_in_gibibytes(self):
+        text = """\
+MemTotal:        8176204 kB
+MemFree:          104832 kB
+"""
+
+        self.assertEqual("7.8 GiB", manager.parse_meminfo(text))
+
+    def test_meminfo_falls_back_when_total_is_missing(self):
+        self.assertEqual("Unknown", manager.parse_meminfo("MemFree: 42 kB\n"))
+
+    def test_lspci_graphics_parses_a_quoted_vga_controller(self):
+        text = """\
+00:1f.3 \"Audio device\" \"Intel Corporation\" \"Sunrise Point-LP HD Audio\"
+00:02.0 \"VGA compatible controller\" \"Intel Corporation\" \"UHD Graphics 620\"
+"""
+
+        self.assertEqual(
+            "Intel Corporation UHD Graphics 620",
+            manager.parse_lspci_graphics(text),
+        )
+
+    def test_lspci_graphics_parses_a_quoted_3d_controller(self):
+        text = (
+            '01:00.0 "3D controller" "NVIDIA Corporation" '
+            '"GA107M [GeForce RTX 3050 Ti Mobile]"\n'
+        )
+
+        self.assertEqual(
+            "NVIDIA Corporation GA107M [GeForce RTX 3050 Ti Mobile]",
+            manager.parse_lspci_graphics(text),
+        )
+
+    def test_lspci_graphics_falls_back_without_a_display_controller(self):
+        text = '00:1f.3 "Audio device" "Intel Corporation" "HD Audio"\n'
+
+        self.assertEqual("Not detected", manager.parse_lspci_graphics(text))
+
+    def test_network_adapter_summary_includes_driver_link_and_speed(self):
+        self.assertEqual(
+            "enp2s0 · Ethernet · r8169 · connected · 1 Gb/s",
+            manager.format_network_adapter("enp2s0", False, "r8169", "up", "1000"),
+        )
+        self.assertEqual(
+            "wlp3s0 · Wi-Fi · iwlwifi · down",
+            manager.format_network_adapter("wlp3s0", True, "iwlwifi", "down", "-1"),
+        )
+
+    def test_network_addresses_are_static_and_support_friendly(self):
+        text = """[
+          {"ifname":"lo","addr_info":[{"local":"127.0.0.1","prefixlen":8,"scope":"host"}]},
+          {"ifname":"enp2s0","addr_info":[
+            {"local":"192.168.10.42","prefixlen":24,"scope":"global"},
+            {"local":"fe80::1","prefixlen":64,"scope":"link"}
+          ]}
+        ]"""
+
+        self.assertEqual(
+            {"enp2s0": ["192.168.10.42/24"]},
+            manager.parse_ip_addresses(text),
+        )
+        self.assertEqual(
+            "enp2s0 · Ethernet · r8169 · connected · 1 Gb/s · 192.168.10.42/24",
+            manager.format_network_adapter(
+                "enp2s0", False, "r8169", "up", "1000", ["192.168.10.42/24"]
+            ),
+        )
+
+    def test_unbound_network_controller_is_visible_for_support(self):
+        text = """\
+Slot:\t0000:00:1f.6
+Class:\tEthernet controller
+Vendor:\tIntel Corporation
+Device:\tEthernet Connection I219-LM
+Module:\te1000e
+
+Slot:\t0000:02:00.0
+Class:\tNetwork controller
+Vendor:\tIntel Corporation
+Device:\tWi-Fi 6 AX200
+Driver:\tiwlwifi
+Module:\tiwlwifi
+"""
+
+        self.assertEqual(
+            ["Intel Corporation Ethernet Connection I219-LM · no driver bound"],
+            manager.parse_unbound_network_controllers(text),
+        )
+
+    def test_hardware_snapshot_is_collected_only_once(self):
+        old_cache = manager._HARDWARE_CACHE
+        manager._HARDWARE_CACHE = None
+        files = {
+            "/proc/cpuinfo": "model name: Test CPU\n",
+            "/proc/meminfo": "MemTotal: 4194304 kB\n",
+        }
+        try:
+            with mock.patch.object(manager, "_read_local", side_effect=files.get) as read, \
+                    mock.patch.object(manager, "run", return_value="") as run, \
+                    mock.patch.object(manager, "network_adapter_info",
+                                      return_value="eth0 · Ethernet · e1000 · up"), \
+                    mock.patch.object(manager.os, "cpu_count", return_value=4), \
+                    mock.patch.object(manager.platform, "machine", return_value="x86_64"):
+                first = manager.hardware_info()
+                second = manager.hardware_info()
+        finally:
+            manager._HARDWARE_CACHE = old_cache
+
+        self.assertEqual(first, second)
+        self.assertIsNot(first, second)
+        self.assertEqual(2, read.call_count)
+        run.assert_called_once_with(["lspci", "-mm"], timeout=3)
+
+    def test_about_is_public_and_always_destroys_its_dialog(self):
+        info = {"name": "ThinClient", "version": "1.2"}
+        hardware = {"Architecture": "x86_64"}
+        window = types.SimpleNamespace(info=info, set_status=mock.Mock())
+        dialog = mock.Mock()
+
+        with mock.patch.object(manager, "hardware_info", return_value=hardware), \
+                mock.patch.object(manager, "AboutDialog", return_value=dialog) as about:
+            manager.ThinClient.on_about(window)
+
+        about.assert_called_once_with(window, info, hardware)
+        dialog.run.assert_called_once_with()
+        dialog.destroy.assert_called_once_with()
+        window.set_status.assert_not_called()
+        self.assertEqual(
+            "https://github.com/patnawa/Thinclient", manager.GITHUB_URL
+        )
+
     def test_reload_received_during_a_session_is_remembered(self):
         window = types.SimpleNamespace(session_active=True, reload_pending=False)
 

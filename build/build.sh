@@ -86,6 +86,7 @@ in_chroot() {
     INCLUDE_USB_REDIR="$INCLUDE_USB_REDIR" INCLUDE_WIFI="$INCLUDE_WIFI" \
     INCLUDE_WIFI_FIRMWARE="$INCLUDE_WIFI_FIRMWARE" \
     INCLUDE_ADMIN_TOOLS="$INCLUDE_ADMIN_TOOLS" \
+    INCLUDE_SSH_SERVER="$INCLUDE_SSH_SERVER" \
     DEFAULT_TIMEZONE="$DEFAULT_TIMEZONE" DEFAULT_KEYMAP="$DEFAULT_KEYMAP" \
     DEFAULT_NTP="$DEFAULT_NTP" \
     /bin/bash "$1"
@@ -95,20 +96,49 @@ in_chroot /tmp/chroot-setup.sh || die "chroot provisioning failed"
 
 log "stage 2  applying overlay"
 
-# Copy overlay, normalising line endings on the way in.
-rsync -a --exclude '.git' "$REPO_DIR/overlay/" "$ROOTFS/"
+# Copy overlay, normalising line endings on the way in. Repository files come
+# from DrvFS on the supported Windows/WSL build path, where every directory and
+# file can appear as mode 0777. Never preserve those untrusted host modes.
+rsync -rlt --safe-links --exclude '.git' --exclude '__pycache__' \
+  "$REPO_DIR/overlay/" "$ROOTFS/"
 while IFS= read -r -d '' f; do
   case "$(file -b --mime-type "$f")" in
     text/*|application/json|application/xml|inode/x-empty) sed -i 's/\r$//' "$f" ;;
   esac
 done < <(find "$ROOTFS/etc/thinclient" "$ROOTFS/usr/local" "$ROOTFS/etc/systemd" \
               "$ROOTFS/etc/udev" "$ROOTFS/etc/X11" "$ROOTFS/etc/NetworkManager" \
-              "$ROOTFS/etc/sudoers.d" "$ROOTFS/etc/openbox" -type f -print0 2>/dev/null)
+              "$ROOTFS/etc/sudoers.d" "$ROOTFS/etc/openbox" "$ROOTFS/etc/ssh" \
+              -type f -print0 2>/dev/null)
+
+# Normalize every overlay destination directory plus the trusted ancestors
+# used to reach privileged helpers. A 0755 helper inside a writable parent is
+# still replaceable and therefore equivalent to a passwordless root shell.
+chmod 0755 "$ROOTFS" "$ROOTFS/etc" "$ROOTFS/usr" "$ROOTFS/usr/local"
+while IFS= read -r -d '' d; do
+  relative="${d#$REPO_DIR/overlay}"
+  [ -z "$relative" ] || {
+    chown root:root "$ROOTFS$relative"
+    chmod 0755 "$ROOTFS$relative"
+  }
+done < <(find "$REPO_DIR/overlay" -type d ! -name __pycache__ -print0)
+while IFS= read -r -d '' f; do
+  relative="${f#$REPO_DIR/overlay}"
+  chown root:root "$ROOTFS$relative"
+  chmod 0644 "$ROOTFS$relative"
+done < <(find "$REPO_DIR/overlay" -type f ! -path '*/__pycache__/*' -print0)
 
 # Executable bits do not survive a Windows filesystem; set them explicitly.
 chmod 0755 "$ROOTFS"/usr/local/bin/* "$ROOTFS"/usr/local/sbin/* 2>/dev/null || true
 chmod 0755 "$ROOTFS"/etc/NetworkManager/dispatcher.d/* 2>/dev/null || true
-chmod 0644 "$ROOTFS"/etc/systemd/system/*.service 2>/dev/null || true
+# DrvFS commonly presents repository files and newly created directories as
+# 0777. Normalize complete unit/drop-in trees: a writable systemd or sshd
+# configuration would let the kiosk user defeat service security policy.
+find "$ROOTFS/etc/systemd/system" -type d -exec chmod 0755 {} +
+find "$ROOTFS/etc/systemd/system" -type f -exec chmod 0644 {} +
+if [ -d "$ROOTFS/etc/ssh/sshd_config.d" ]; then
+  find "$ROOTFS/etc/ssh/sshd_config.d" -type d -exec chmod 0755 {} +
+  find "$ROOTFS/etc/ssh/sshd_config.d" -type f -exec chmod 0644 {} +
+fi
 chmod 0440 "$ROOTFS"/etc/sudoers.d/* 2>/dev/null || true
 chmod 0755 "$ROOTFS"/usr/local/lib/thinclient/*.py 2>/dev/null || true
 
@@ -297,6 +327,62 @@ if [ "$SECUREBOOT_OK" = "1" ]; then
   mcopy -i "$EFI_IMG" "$IMAGE/EFI/debian/grub.cfg" ::/EFI/debian/
 fi
 
+# A raw-written USB should be useful without a second partitioning step. Keep
+# persistence separate from ISO9660: the operating system remains immutable,
+# while this small FAT32 filesystem can be mounted read-write by the client and
+# edited from Windows. It is seeded from the already-baked configuration, never
+# from the placeholder in overlay/.
+TCCONF_IMG="$WORKDIR/tcconf.img"
+TCCONF_ARGS=()
+case "$TCCONF_SIZE_MB" in
+  0) rm -f "$TCCONF_IMG" ;;
+  ''|*[!0-9]*) die "TCCONF_SIZE_MB must be 0 or an integer of at least 64" ;;
+  *)
+    [ "$TCCONF_SIZE_MB" -ge 64 ] \
+      || die "TCCONF_SIZE_MB must be 0 or at least 64 (FAT32 minimum)"
+    log "stage 4  creating ${TCCONF_SIZE_MB} MiB TCCONF settings partition"
+    rm -f "$TCCONF_IMG"
+    mkfs.vfat -C -F 32 -n TCCONF "$TCCONF_IMG" \
+      $((TCCONF_SIZE_MB * 1024)) >/dev/null
+    mmd -i "$TCCONF_IMG" ::/ca-certificates
+    mmd -i "$TCCONF_IMG" ::/support
+    mcopy -i "$TCCONF_IMG" "$OUTDIR/config.json" ::/config.json
+    if [ -n "$SUPPORT_AUTHORIZED_KEYS_FILE" ]; then
+      [ -f "$SUPPORT_AUTHORIZED_KEYS_FILE" ] \
+        || die "SUPPORT_AUTHORIZED_KEYS_FILE not found: $SUPPORT_AUTHORIZED_KEYS_FILE"
+      # Validate every non-comment line before publishing an image that would
+      # appear support-ready but cannot actually accept a key login.
+      python3 - "$SUPPORT_AUTHORIZED_KEYS_FILE" <<'PYEOF'
+import base64, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+valid = 0
+for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    fields = line.split()
+    if len(fields) < 2 or not fields[0].startswith(("ssh-", "ecdsa-", "sk-")):
+        raise SystemExit("invalid SSH public key at %s:%d" % (path, number))
+    try:
+        base64.b64decode(fields[1], validate=True)
+    except ValueError as exc:
+        raise SystemExit("invalid SSH public key at %s:%d: %s" % (path, number, exc))
+    valid += 1
+if not valid:
+    raise SystemExit("SUPPORT_AUTHORIZED_KEYS_FILE contains no public keys")
+PYEOF
+      mcopy -i "$TCCONF_IMG" "$SUPPORT_AUTHORIZED_KEYS_FILE" \
+        ::/support/authorized_keys
+      log "stage 4  embedded key-only SSH support access"
+    fi
+    # With the existing isohybrid GPT option, xorriso records this in both GPT
+    # and the bootable MBR. 0x0c is FAT32 LBA in MBR and Basic Data in GPT.
+    TCCONF_ARGS=(-append_partition 3 0x0c "$TCCONF_IMG")
+    ;;
+esac
+[ "$TCCONF_SIZE_MB" != "0" ] || [ -z "$SUPPORT_AUTHORIZED_KEYS_FILE" ] \
+  || die "SUPPORT_AUTHORIZED_KEYS_FILE needs an embedded TCCONF partition"
+
 # ================================================================ stage 5 ====
 # Master the hybrid ISO.
 # =============================================================================
@@ -319,7 +405,15 @@ xorriso -as mkisofs \
      -no-emul-boot -boot-load-size 4 -boot-info-table \
   -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot \
      -isohybrid-gpt-basdat \
+  "${TCCONF_ARGS[@]}" \
   -o "$ISO_PATH" "$IMAGE" || die "xorriso failed"
+
+# Rounded file-manager sizes cannot distinguish close releases. Publish an
+# exact digest beside every ISO so operators can identify and verify it.
+ISO_BASENAME="$(basename "$ISO_PATH")"
+(cd "$OUTDIR" && sha256sum "$ISO_BASENAME" > "$ISO_BASENAME.sha256")
+log "ISO bytes: $(stat -c %s "$ISO_PATH")"
+log "ISO SHA-256: $(cut -d ' ' -f1 "$ISO_PATH.sha256")"
 
 # ================================================================ stage 6 ====
 # PXE / netboot artifacts + ready-to-paste server configs.

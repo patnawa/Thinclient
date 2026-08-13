@@ -256,6 +256,18 @@ def seed_config(target):
         with open(os.path.join(mountpoint, "config.json"), "w", encoding="utf-8") as fh:
             fh.write(payload)
         os.makedirs(os.path.join(mountpoint, "ca-certificates"), exist_ok=True)
+        support_dir = os.path.join(mountpoint, "support")
+        os.makedirs(support_dir, exist_ok=True)
+        # Carry only the already validated public authorization onto an internal
+        # install. Never copy host private keys: the installed client creates a
+        # fresh identity on its own first boot.
+        runtime_authorization = "/run/thinclient-support/user/authorized_keys"
+        if (os.path.isfile(runtime_authorization)
+                and not os.path.islink(runtime_authorization)):
+            shutil.copyfile(
+                runtime_authorization,
+                os.path.join(support_dir, "authorized_keys"),
+            )
         print("  settings written to the %s partition" % CONFIG_LABEL)
     except Exception as exc:                       # noqa: BLE001
         print("  could not seed the configuration: %s" % exc, file=sys.stderr)

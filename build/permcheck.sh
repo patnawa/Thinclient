@@ -66,6 +66,27 @@ if as_root /bin/sh -c 'command -v sudo >/dev/null'; then
 else
     bad "sudo is NOT installed" "every privileged UI action will fail"
 fi
+for helper in /usr/local/sbin/tc-save-config \
+              /usr/local/sbin/tc-apply-config \
+              /usr/local/sbin/tc-fetch-config; do
+    if as_root /usr/bin/python3 - "$helper" <<'PYEOF'
+import os, stat, sys
+path = os.path.realpath(sys.argv[1])
+parts = path.split(os.sep)
+current = os.sep
+for part in parts[1:]:
+    current = os.path.join(current, part)
+    info = os.stat(current)
+    if info.st_uid != 0 or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SystemExit("unsafe path component: %s mode=%o uid=%d" %
+                         (current, stat.S_IMODE(info.st_mode), info.st_uid))
+PYEOF
+    then
+        ok "$helper and every parent are root-owned/non-writable"
+    else
+        bad "$helper has a replaceable path component"
+    fi
+done
 for cmd in "/usr/bin/systemctl reboot" "/usr/bin/systemctl poweroff" \
            "/usr/local/sbin/tc-save-config" "/usr/local/sbin/tc-apply-config" \
            "/usr/bin/nmcli"; do
@@ -148,8 +169,13 @@ as_root /bin/mkdir -p /run/tc-config-test
 as_root /bin/sh -c 'printf "{\"schema\": 1}\n" > /run/tc-config-test/config.json'
 HTTP_PORT="$(as_root /usr/bin/python3 -c \
     'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-as_root /usr/bin/python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 \
-    --directory /run/tc-config-test >/tmp/tc-config-test-http.log 2>&1 &
+# Launch the server directly rather than backgrounding the as_root shell
+# function.  That keeps HTTP_PID attached to the final exec'ed Python process,
+# so the normal and EXIT cleanup paths cannot leave an orphan on the build host.
+chroot "$ROOTFS" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/root LC_ALL=C /usr/bin/python3 -m http.server "$HTTP_PORT" \
+    --bind 127.0.0.1 --directory /run/tc-config-test \
+    >/tmp/tc-config-test-http.log 2>&1 &
 HTTP_PID=$!
 /bin/sleep 0.3
 if ! kill -0 "$HTTP_PID" 2>/dev/null; then

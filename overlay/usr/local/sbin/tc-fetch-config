@@ -59,12 +59,137 @@ kernel_arg() {
     return 1
 }
 
+# BEGIN TCCONF_DEVICE_RESOLVER
+# Keep this resolver identical in both configuration scripts. A label can occur
+# on more than one attached drive, so never let blkid choose an arbitrary one.
+tcconf_labelled_device() {
+    [ -n "${1:-}" ] \
+        && [ "$(blkid -s LABEL -o value "$1" 2>/dev/null)" = "TCCONF" ] \
+        && [ "$(blkid -s TYPE -o value "$1" 2>/dev/null)" = "vfat" ]
+}
+
+tcconf_canonical_device() {
+    tc_resolved="$(readlink -f "$1" 2>/dev/null || true)"
+    if [ -n "$tc_resolved" ]; then
+        printf '%s\n' "$tc_resolved"
+    else
+        printf '%s\n' "$1"
+    fi
+}
+
+tcconf_mounted_device() {
+    tc_source="$(findmnt -rn -o SOURCE --target "$1" 2>/dev/null | sed -n '1p')"
+    [ -n "$tc_source" ] && tcconf_labelled_device "$tc_source" || return 1
+    tcconf_canonical_device "$tc_source"
+}
+
+tcconf_whole_disk() {
+    tc_current="$(tcconf_canonical_device "$1")"
+    tc_hops=0
+    while [ "$tc_hops" -lt 16 ]; do
+        tc_parent="$(lsblk -dnro PKNAME "$tc_current" 2>/dev/null | sed -n '1p')"
+        if [ -z "$tc_parent" ]; then
+            printf '%s\n' "$tc_current"
+            return 0
+        fi
+        case "$tc_parent" in
+            /*) tc_current="$tc_parent" ;;
+            *)  tc_current="/dev/$tc_parent" ;;
+        esac
+        tc_current="$(tcconf_canonical_device "$tc_current")"
+        tc_hops=$((tc_hops + 1))
+    done
+    return 1
+}
+
+tcconf_discover_device() {
+    tc_candidates="$(blkid -t LABEL=TCCONF -o device 2>/dev/null || true)"
+    [ -n "$tc_candidates" ] || return 1
+
+    tc_boot_source="$(findmnt -rn -o SOURCE --target /run/live/medium 2>/dev/null | sed -n '1p')"
+    tc_boot_disk=""
+    if [ -n "$tc_boot_source" ]; then
+        tc_boot_disk="$(tcconf_whole_disk "$tc_boot_source" 2>/dev/null || true)"
+    fi
+
+    tc_fallback=""
+    for tc_candidate in $tc_candidates; do
+        tcconf_labelled_device "$tc_candidate" || continue
+        tc_candidate="$(tcconf_canonical_device "$tc_candidate")"
+        [ -n "$tc_fallback" ] || tc_fallback="$tc_candidate"
+        if [ -n "$tc_boot_disk" ] \
+                && [ "$(tcconf_whole_disk "$tc_candidate" 2>/dev/null || true)" = "$tc_boot_disk" ]; then
+            printf '%s\n' "$tc_candidate"
+            return 0
+        fi
+    done
+
+    [ -n "$tc_fallback" ] || return 1
+    printf '%s\n' "$tc_fallback"
+}
+
+tcconf_mount_options() {
+    tc_mode="$1"
+    tc_device="$2"
+    [ "$(blkid -s TYPE -o value "$tc_device" 2>/dev/null)" = "vfat" ] || return 1
+    # FAT has no Unix ownership or mode bits. These masks make config, CA files,
+    # support keys, and host private keys root-only while the UI continues to
+    # read/write config through its sudo helpers.
+    printf '%s\n' "$tc_mode,noatime,nosuid,nodev,noexec,uid=0,gid=0,fmask=0177,dmask=0077"
+}
+
+tcconf_secure_mount() {
+    tc_mode="$1" tc_device="$2" tc_target="$3"
+    tc_options="$(tcconf_mount_options "$tc_mode" "$tc_device")" || return 1
+    mount -o "$tc_options" "$tc_device" "$tc_target"
+}
+
+tcconf_secure_remount() {
+    tc_mode="$1" tc_device="$2" tc_target="$3"
+    tc_options="$(tcconf_mount_options "$tc_mode" "$tc_device")" || return 1
+    mount -o "remount,$tc_options" "$tc_target"
+}
+# END TCCONF_DEVICE_RESOLVER
+
 # --- 1. a TCCONF partition on the USB stick ---------------------------------
-DEV="$(blkid -L TCCONF 2>/dev/null || true)"
-if [ -n "$DEV" ]; then
-    mount -o rw,noatime "$DEV" "$MEDIA" 2>/dev/null \
-        || mount -o ro "$DEV" "$MEDIA" 2>/dev/null \
-        || echo "tc-fetch-config: could not mount $DEV" >&2
+DEV=""
+MEDIA_READY=0
+if mountpoint -q "$MEDIA"; then
+    DEV="$(tcconf_mounted_device "$MEDIA" 2>/dev/null || true)"
+    if [ -n "$DEV" ]; then
+        CURRENT_MODE=rw
+        case ",$(findmnt -rn -o OPTIONS --target "$MEDIA" 2>/dev/null)," in
+            *,ro,*) CURRENT_MODE=ro ;;
+        esac
+        if tcconf_secure_remount "$CURRENT_MODE" "$DEV" "$MEDIA" 2>/dev/null; then
+            MEDIA_READY=1
+        else
+            echo "tc-fetch-config: could not secure the existing TCCONF mount" >&2
+        fi
+    else
+        echo "tc-fetch-config: $MEDIA is not a mounted TCCONF partition" >&2
+    fi
+else
+    DEV="$(tcconf_discover_device 2>/dev/null || true)"
+    if [ -n "$DEV" ]; then
+        # Recheck before mounting so a device mounted concurrently remains
+        # authoritative and is never hidden by a second mount.
+        if mountpoint -q "$MEDIA"; then
+            DEV="$(tcconf_mounted_device "$MEDIA" 2>/dev/null || true)"
+            if [ -n "$DEV" ] \
+                    && tcconf_secure_remount rw "$DEV" "$MEDIA" 2>/dev/null; then
+                MEDIA_READY=1
+            fi
+        elif tcconf_secure_mount rw "$DEV" "$MEDIA" 2>/dev/null \
+                || tcconf_secure_mount ro "$DEV" "$MEDIA" 2>/dev/null; then
+            MEDIA_READY=1
+        else
+            echo "tc-fetch-config: could not mount $DEV" >&2
+        fi
+    fi
+fi
+
+if [ "$MEDIA_READY" -eq 1 ]; then
     for candidate in "$MEDIA/config.json" "$MEDIA/thinclient/config.json"; do
         if [ -f "$candidate" ] && valid_json "$candidate"; then
             TMP="$(mktemp "$ROOT_STATE/media-config.XXXXXX")" || continue
@@ -86,6 +211,12 @@ if [ -n "$DEV" ]; then
         cp "$MEDIA"/ca-certificates/*.crt /usr/local/share/ca-certificates/ 2>/dev/null \
             && update-ca-certificates >/dev/null 2>&1
     fi
+fi
+
+# The support daemon is independently gated by this helper and a systemd path
+# condition. No validated physical-media key means no listening SSH socket.
+if command -v sshd >/dev/null 2>&1; then
+    /usr/local/sbin/tc-prepare-support "$MEDIA_READY"
 fi
 
 # --- 2. central configuration over HTTP -------------------------------------

@@ -18,6 +18,8 @@ repo_probe_dir = Path(__file__).resolve().parents[1] / "test"
 sys.path.insert(0, str(repo_probe_dir if repo_probe_dir.is_dir() else "/opt/tests"))
 import probe_rdp_server  # noqa: E402
 
+rdpprobe = probe_rdp_server.rdpprobe
+
 
 NEGOTIATION_RESPONSE = (
     bytes.fromhex("0ed00000000000") +
@@ -73,7 +75,7 @@ class ProbeResponse(unittest.TestCase):
     def run_probe(self, chunks):
         sock = FragmentedSocket(chunks)
         with mock.patch.object(
-                probe_rdp_server.socket, "create_connection", return_value=sock):
+                rdpprobe.socket, "create_connection", return_value=sock):
             result = probe_rdp_server.probe("rdp.example.com", timeout=2)
         self.assertEqual(probe_rdp_server.connection_request(), sock.sent)
         return result
@@ -112,11 +114,91 @@ class ProbeResponse(unittest.TestCase):
 
         self.assertIn("invalid TPKT length", result["error"])
 
+    def test_oversized_tpkt_is_rejected_without_reading_its_body(self):
+        result = self.run_probe([
+            struct.pack("!BBH", 3, 0, rdpprobe.MAX_TPKT_SIZE + 1)
+        ])
+
+        self.assertIn("maximum accepted", result["error"])
+
     def test_connection_closed_during_body_is_reported_as_truncated(self):
         header = struct.pack("!BBH", 3, 0, 4 + len(NEGOTIATION_RESPONSE))
         result = self.run_probe([header, NEGOTIATION_RESPONSE[:8]])
 
         self.assertIn("truncated TPKT response", result["error"])
+
+
+class ResponseValidation(unittest.TestCase):
+    """Reject packets that look similar to a negotiation but are not valid."""
+
+    def test_x224_connection_confirm_type_is_required(self):
+        body = bytearray(NEGOTIATION_RESPONSE)
+        body[1] = 0xE0
+
+        result = rdpprobe.parse_response(bytes(body))
+
+        self.assertIn("expected 0xD0", result["error"])
+
+    def test_x224_length_indicator_must_match_packet(self):
+        body = bytearray(NEGOTIATION_RESPONSE)
+        body[0] -= 1
+
+        result = rdpprobe.parse_response(bytes(body))
+
+        self.assertIn("does not match", result["error"])
+
+    def test_truncated_negotiation_header_is_rejected(self):
+        body = bytes.fromhex("09d00000000000") + b"\x02\x00\x08"
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("truncated negotiation response header", result["error"])
+
+    def test_unexpected_negotiation_type_is_rejected(self):
+        body = bytes.fromhex("0ed00000000000") + struct.pack(
+            "<BBHI", 0x01, 0, 8, rdpprobe.PROTOCOL_TLS
+        )
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("unexpected response type", result["error"])
+
+    def test_declared_negotiation_length_must_be_eight(self):
+        body = bytes.fromhex("0ed00000000000") + struct.pack(
+            "<BBHI", 0x02, 0, 9, rdpprobe.PROTOCOL_TLS
+        )
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("expected 8", result["error"])
+
+    def test_declared_negotiation_length_must_match_available_bytes(self):
+        body = bytes.fromhex("0fd00000000000") + struct.pack(
+            "<BBHI", 0x02, 0, 8, rdpprobe.PROTOCOL_TLS
+        ) + b"\x00"
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("does not match", result["error"])
+
+    def test_failure_response_is_decoded(self):
+        body = bytes.fromhex("0ed00000000000") + struct.pack(
+            "<BBHI", 0x03, 0, 8, 5
+        )
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("HYBRID_REQUIRED", result["failure"])
+
+    def test_unknown_selected_protocol_is_rejected(self):
+        body = bytes.fromhex("0ed00000000000") + struct.pack(
+            "<BBHI", 0x02, 0, 8, 0x40000000
+        )
+
+        result = rdpprobe.parse_response(body)
+
+        self.assertIn("unknown selected RDP protocol", result["error"])
+        self.assertNotIn("selected", result)
 
 
 if __name__ == "__main__":
