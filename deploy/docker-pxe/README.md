@@ -64,14 +64,14 @@ To build the image directly from a repository checkout:
 cd Thinclient
 sudo docker build \
   --file deploy/docker-pxe/Dockerfile \
-  --tag thinclient-pxe-server:1.3 .
+  --tag thinclient-pxe-server:1.4 .
 ```
 
 The normal `deploy.sh` command performs this local build automatically. A
 published image is also available from GitHub Container Registry:
 
 ```bash
-sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.3
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.4
 ```
 
 Publishing is automated by `.github/workflows/publish-container.yml` whenever
@@ -89,7 +89,7 @@ sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 To deploy the published image instead of compiling it on the Debian host:
 
 ```bash
-sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.3 \
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.4 \
   bash deploy/docker-pxe/deploy.sh \
   192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
@@ -171,7 +171,7 @@ the new boot menus and recreates containers only when their configuration or
 image changed.
 
 For rollback, point the same command at the retained previous PXE directory
-and, when using GHCR, its previous image tag:
+and, when using GHCR, its previous image tag (1.3 in this example):
 
 ```bash
 sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.3 \

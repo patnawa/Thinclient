@@ -11,6 +11,18 @@ EXPECTED_CONFIG="${EXPECTED_CONFIG:-${OUTDIR:-$REPO/out}/config.json}"
 [ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
 command -v xorriso >/dev/null || { echo "missing xorriso"; exit 1; }
 
+RELEASE_VERSION="${DISTRO_VERSION%%-*}"
+PXE_TREE="${PXE_TREE:-${OUTDIR:-$REPO/out}/pxe}"
+SQUASHFS="$PXE_TREE/thinclient/filesystem.squashfs"
+[ -r "$SQUASHFS" ] || { echo "missing built squashfs at $SQUASHFS"; exit 1; }
+command -v unsquashfs >/dev/null || { echo "missing unsquashfs"; exit 1; }
+EMBEDDED_CHANGELOG="$(
+    unsquashfs -cat "$SQUASHFS" usr/share/thinclient/CHANGELOG.md 2>/dev/null
+)" || { echo "squashfs is missing the offline changelog"; exit 1; }
+grep -q "^## $RELEASE_VERSION" <<<"$EMBEDDED_CHANGELOG" || {
+    echo "offline changelog has no $RELEASE_VERSION release entry"; exit 1;
+}
+
 if [ "$TCCONF_SIZE_MB" = "0" ]; then
     echo "TCCONF is disabled for this build (TCCONF_SIZE_MB=0)"
     exit 0
@@ -59,3 +71,4 @@ if embedded != expected:
 echo "IMAGE CHECK PASSED"
 echo "  partition 3: TCCONF, ${TCCONF_SIZE_MB} MiB FAT32"
 echo "  embedded config.json matches the baked build configuration"
+echo "  offline changelog contains release $RELEASE_VERSION"

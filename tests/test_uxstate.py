@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 
@@ -26,6 +27,25 @@ class ConnectionPresentation(unittest.TestCase):
         self.assertEqual("Finance", uxstate.connection_group({"group": " Finance "}))
         self.assertEqual("Month-end accounting", uxstate.connection_description(
             {"description": " Month-end   accounting "}))
+
+
+class ChangelogPresentation(unittest.TestCase):
+    def test_reads_bounded_offline_changelog(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "CHANGELOG.md"
+            path.write_text("## 1.4\n\n- New UI\n" + "x" * 100, encoding="utf-8")
+            text = uxstate.changelog_text(path, limit=32)
+        self.assertTrue(text.startswith("## 1.4"))
+        self.assertIn("Older entries omitted", text)
+
+    def test_missing_changelog_has_readable_fallback(self):
+        self.assertIn("not available", uxstate.changelog_text("/missing/changelog"))
+
+    def test_repository_changelog_contains_current_release(self):
+        changelog = (Path(__file__).resolve().parents[1] / "CHANGELOG.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("## 1.4", changelog)
 
 
 class CachePresentation(unittest.TestCase):

@@ -33,6 +33,7 @@ step "FreeRDP options"    bash "$REPO/build/rdpcheck.sh"
 step "connection manager renders" quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-preview.png"
 step "settings dialog renders"    quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-settings.png" settings
 step "Help dialog renders"        quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-about.png" about
+step "changelog renders"          quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-changelog.png" changelog
 step "network test renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-network-test.png" network-test
 step "admin dialog renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-admin.png" admin
 step "progress dialog renders"    quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-progress.png" progress

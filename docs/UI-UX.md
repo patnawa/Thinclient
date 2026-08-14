@@ -1,6 +1,6 @@
 # ThinClient UI/UX baseline
 
-This document records the 1.3 fleet UI decisions so later work can improve the
+This document records the 1.4 fleet UI decisions so later work can improve the
 experience without accidentally restoring technician-oriented clutter to the
 normal-user path.
 
@@ -24,7 +24,8 @@ normal-user path.
    credential-free report remains copyable under Technical details.
 7. Help exposes version, Lite/Full profile, hostname, IP, cache state, and last
    error. It can copy a credential-free support report, run the public network
-   test, and generate an offline QR support code when `qrencode` is installed.
+   test, generate an offline QR support code when `qrencode` is installed, and
+   display the changelog stored inside the image.
 8. Connection failures offer Choose another, Run network test, and Try again.
    Non-retryable credential failures deliberately omit Try again and forget any
    transient password.

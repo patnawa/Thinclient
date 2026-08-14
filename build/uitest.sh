@@ -4,6 +4,7 @@
 #   bash build/uitest.sh [output.png]
 #   bash build/uitest.sh out.png settings    # screenshot the Settings dialog
 #   bash build/uitest.sh out.png about       # screenshot public Help/support
+#   bash build/uitest.sh out.png changelog   # screenshot offline release notes
 #   bash build/uitest.sh out.png network-test # screenshot on-demand preflight
 #   TC_UI_SCREEN=1024x768 bash build/uitest.sh out.png manager
 set -u
@@ -13,6 +14,7 @@ SHOT="${1:-/tmp/tc-ui.png}"
 MODE="${2:-manager}"
 DISP=:99
 SCREEN="${TC_UI_SCREEN:-1280x800}"
+mkdir -p "$(dirname "$SHOT")"
 
 command -v Xvfb >/dev/null || { echo "install xvfb"; exit 1; }
 command -v import >/dev/null || { echo "install imagemagick"; exit 1; }
@@ -59,6 +61,7 @@ sleep 1
 # On WSL, WSLg exports WAYLAND_DISPLAY and GTK would quietly connect to the
 # Windows-side compositor instead of our Xvfb. tc-session pins the same thing.
 export GDK_BACKEND=x11
+export TC_CHANGELOG_FILE="$REPO/CHANGELOG.md"
 unset WAYLAND_DISPLAY
 
 if [ "$MODE" = "sessionbar" ]; then
@@ -164,7 +167,8 @@ GLib.timeout_add(500, lambda: (window.on_about(), False)[1])
 Gtk.main()
 PYEOF
   DISPLAY=$DISP python3 /tmp/tc-about-driver.py > /tmp/tc-ui.log 2>&1 &
-elif [ "$MODE" = "admin" ] || [ "$MODE" = "progress" ] || [ "$MODE" = "error" ]; then
+elif [ "$MODE" = "admin" ] || [ "$MODE" = "progress" ] || \
+     [ "$MODE" = "error" ] || [ "$MODE" = "changelog" ]; then
   cat > /tmp/tc-dialog-driver.py <<PYEOF
 import sys
 sys.path.insert(0, "/usr/local/lib/thinclient")
@@ -185,6 +189,8 @@ if mode == "admin":
 elif mode == "progress":
     dialog = manager.ConnectionProgressDialog(parent, connection, lambda: None)
     dialog.set_stage("Contacting server", "Checking Windows Server 2025 on port 3389…")
+elif mode == "changelog":
+    dialog = manager.ChangelogDialog(parent)
 else:
     dialog = manager.ConnectionErrorDialog(
         parent, connection,
@@ -257,6 +263,11 @@ fi
 command -v xdotool >/dev/null && DISPLAY=$DISP xdotool mousemove 2 2 2>/dev/null
 sleep 1
 DISPLAY=$DISP import -window root "$SHOT" 2>/dev/null
+[ -s "$SHOT" ] || {
+  echo "SCREENSHOT FAILED: $SHOT was not created"
+  kill "$APP" "$OB" "$XVFB" 2>/dev/null
+  exit 1
+}
 echo "screenshot: $SHOT"
 DISPLAY=$DISP xwininfo -root -children 2>/dev/null | grep -c '0x' | \
   xargs -I{} echo "mapped windows: {}"

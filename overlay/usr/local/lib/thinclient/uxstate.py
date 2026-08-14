@@ -11,12 +11,28 @@ import re
 CACHE_INIT_STATUS = "/run/initramfs/tc-cache-status"
 CACHE_SAVE_STATUS = "/run/thinclient/cache-status"
 CACHE_PROGRESS_STATUS = "/run/thinclient/cache-progress"
+CHANGELOG_LIMIT = 96 * 1024
 
 
 def clean_text(value, fallback="", limit=160):
     """Return one safe, compact display line."""
     text = " ".join(str(value or "").split())
     return (text or fallback)[:limit]
+
+
+def changelog_text(path, limit=CHANGELOG_LIMIT):
+    """Read the offline release notes with a bounded, useful fallback."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(max(1, int(limit)) + 1)
+    except (OSError, TypeError, ValueError):
+        return "Release notes are not available in this image."
+    text = text.replace("\x00", "").strip()
+    if not text:
+        return "Release notes are not available in this image."
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "\n\n[Older entries omitted]"
+    return text
 
 
 def connection_group(connection):

@@ -10,7 +10,7 @@ rules, rendering matrix, and next UI studies are recorded in
 
 ## Current release architecture
 
-ThinClient 1.3 provides two independently versioned x86-64 images:
+ThinClient 1.4 provides two independently versioned x86-64 images:
 
 - **Lite** is the default for common Dell, HP, Acer, ASUS, ASRock, and Gigabyte
   office hardware. It retains wired networking, graphics, audio, RDP/VNC,

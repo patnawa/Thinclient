@@ -107,6 +107,10 @@ log "stage 2  applying overlay"
 # file can appear as mode 0777. Never preserve those untrusted host modes.
 rsync -rlt --safe-links --exclude '.git' --exclude '__pycache__' \
   "$REPO_DIR/overlay/" "$ROOTFS/"
+# The repository changelog is canonical; ship the same file in the appliance
+# so Help -> What's new remains available on a completely offline client.
+install -Dm0644 "$REPO_DIR/CHANGELOG.md" \
+  "$ROOTFS/usr/share/thinclient/CHANGELOG.md"
 while IFS= read -r -d '' f; do
   case "$(file -b --mime-type "$f")" in
     text/*|application/json|application/xml|inode/x-empty) sed -i 's/\r$//' "$f" ;;
@@ -114,6 +118,7 @@ while IFS= read -r -d '' f; do
 done < <(find "$ROOTFS/etc/thinclient" "$ROOTFS/usr/local" "$ROOTFS/etc/systemd" \
               "$ROOTFS/etc/udev" "$ROOTFS/etc/X11" "$ROOTFS/etc/NetworkManager" \
               "$ROOTFS/etc/initramfs-tools" "$ROOTFS/usr/lib/live" \
+              "$ROOTFS/usr/share/thinclient" \
               "$ROOTFS/etc/sudoers.d" "$ROOTFS/etc/openbox" "$ROOTFS/etc/ssh" \
               -type f -print0 2>/dev/null)
 

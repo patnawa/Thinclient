@@ -33,6 +33,8 @@ SESSION_LOG = "/run/thinclient/last-session.log"
 BUILD_INFO = "/etc/thinclient/build-info"
 SESSION_BAR = "/usr/local/lib/thinclient/sessionbar.py"
 DISCONNECT_MARKER = "/run/thinclient/disconnect-requested"
+CHANGELOG_FILE = os.environ.get(
+    "TC_CHANGELOG_FILE", "/usr/share/thinclient/CHANGELOG.md")
 GITHUB_URL = "https://github.com/patnawa/Thinclient"
 _HARDWARE_CACHE = None
 
@@ -468,6 +470,7 @@ class HelpDialog(Gtk.Dialog):
     """Public, credential-free device and support view."""
 
     NETWORK_TEST = 101
+    CHANGELOG = 102
 
     def __init__(self, parent, info, hardware, cache, last_error=""):
         title = product_title(info)
@@ -520,8 +523,11 @@ class HelpDialog(Gtk.Dialog):
                           self._copy_report)
         network_btn = button("Run network test", ["tc-btn"],
                              lambda *_: self.response(self.NETWORK_TEST))
+        changelog_btn = button("What's new", ["tc-btn"],
+                               lambda *_: self.response(self.CHANGELOG))
         actions.pack_start(copy_btn, False, False, 0)
         actions.pack_start(network_btn, False, False, 0)
+        actions.pack_start(changelog_btn, False, False, 0)
         content.pack_start(actions, False, False, 0)
 
         lower = Gtk.Box(spacing=18)
@@ -592,6 +598,45 @@ class HelpDialog(Gtk.Dialog):
             except OSError:
                 pass
             self._qr_path = ""
+
+
+class ChangelogDialog(Gtk.Dialog):
+    """Offline release history shipped inside every image."""
+
+    def __init__(self, parent, path=CHANGELOG_FILE):
+        super().__init__(title="What's new", transient_for=parent, modal=True)
+        self.set_default_size(760, 620)
+        self.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.set_default_response(Gtk.ResponseType.CLOSE)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
+                          margin_start=22, margin_end=22,
+                          margin_top=18, margin_bottom=14)
+        content.pack_start(labelled("What's new in ThinClient", "tc-about-title"),
+                           False, False, 0)
+        intro = labelled(
+            "These release notes are stored in the image and work without a network.",
+            "tc-sub",
+        )
+        intro.set_line_wrap(True)
+        content.pack_start(intro, False, False, 0)
+
+        view = Gtk.TextView(editable=False, cursor_visible=False, monospace=False)
+        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        view.set_left_margin(12)
+        view.set_right_margin(12)
+        view.set_top_margin(10)
+        view.set_bottom_margin(10)
+        view.set_hexpand(True)
+        view.set_vexpand(True)
+        view.get_buffer().set_text(uxstate.changelog_text(path))
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_min_content_height(420)
+        scroller.add(view)
+        content.pack_start(scroller, True, True, 0)
+        self.get_content_area().add(content)
+        self.show_all()
 
 
 class AdminDialog(Gtk.Dialog):
@@ -1143,6 +1188,10 @@ class ThinClient(Gtk.Window):
                 dialog.destroy()
         if response == HelpDialog.NETWORK_TEST:
             self.open_quick_network_test()
+        elif response == HelpDialog.CHANGELOG:
+            dialog = ChangelogDialog(self)
+            dialog.run()
+            dialog.destroy()
 
     def on_about(self, *_):
         """Compatibility entry point for older shortcuts and tests."""

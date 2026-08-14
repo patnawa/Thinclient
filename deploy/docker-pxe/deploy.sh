@@ -27,7 +27,7 @@ USE_PREBUILT=0
 if [ -n "${PXE_IMAGE:-}" ]; then
     USE_PREBUILT=1
 else
-    PXE_IMAGE=thinclient-pxe-server:1.3
+    PXE_IMAGE=thinclient-pxe-server:1.4
 fi
 
 case "$HTTP_HOST" in

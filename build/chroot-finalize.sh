@@ -43,7 +43,10 @@ for f in /usr/local/bin/tc-session /usr/local/bin/tc-connect \
          /usr/local/lib/thinclient/networkdiag.py \
          /usr/local/lib/thinclient/rdpprobe.py \
          /usr/local/lib/thinclient/installer.py \
-         /usr/local/lib/thinclient/tcconfig.py /etc/thinclient/config.json; do
+         /usr/local/lib/thinclient/tcconfig.py \
+         /usr/local/lib/thinclient/uxstate.py \
+         /usr/share/thinclient/CHANGELOG.md \
+         /etc/thinclient/config.json; do
   [ -e "$f" ] || { echo "FATAL: missing $f" >&2; exit 1; }
 done
 
@@ -106,6 +109,7 @@ python3 -m py_compile /usr/local/lib/thinclient/tcconfig.py \
                       /usr/local/lib/thinclient/settings.py \
                       /usr/local/lib/thinclient/networkdiag.py \
                       /usr/local/lib/thinclient/rdpprobe.py \
+                      /usr/local/lib/thinclient/uxstate.py \
                       /usr/local/sbin/tc-apply-config \
                       /usr/local/bin/tc-connect
 python3 -c 'import json; json.load(open("/etc/thinclient/config.json"))'
