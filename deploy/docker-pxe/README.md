@@ -100,6 +100,8 @@ The helper performs four operations:
    `http://192.168.1.20:8080`.
 2. Selects the UEFI TFTP kernel/initrd entry first. This avoids warm-reboot TCP
    timeouts seen with some NIC firmware; each large squashfs still uses HTTP.
+   The menu identifies this default as **Lite Auto Cache - restart-safe
+   (recommended)** and retains the HTTP fast path as its automatic fallback.
 3. Records the absolute PXE path, listen address, and HTTP port in an ignored
    `.env` file.
 4. Builds and starts read-only TFTP and HTTP containers with automatic restart.

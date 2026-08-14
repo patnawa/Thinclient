@@ -29,7 +29,7 @@ else
 fi
 
 if [ -z "$SERVER" ]; then
-    echo "usage: bash render-configs.sh <server-ip-or-host[:port]> [--serve]" >&2
+    echo "usage: bash render-configs.sh <server-ip-or-host[:port]> [--serve|--tftp-first]" >&2
     exit 1
 fi
 
@@ -64,17 +64,24 @@ if [ "$MODE" = "--tftp-first" ] && [ -f "$PXE/grub/grub.cfg" ]; then
     # still uses HTTP. Keep the HTTP entry as the automatic fallback.
     if grep -q '/thinclient/lite/' "$PXE/grub/grub.cfg"; then
         # Dual-profile trees list the three HTTP choices first. Entry 3 is the
-        # equivalent Lite Auto Cache TFTP recovery path.
-        sed -i -E \
+        # equivalent Lite Auto Cache TFTP path. Since it is now the selected
+        # path, describe it as restart-safe and recommended instead of calling
+        # the default a recovery option. The other TFTP entries remain recovery
+        # choices because they are not selected automatically.
+        sed -i \
             -e 's/^set default=.*/set default=3/' \
             -e 's/^set fallback=.*/set fallback=0/' \
             -e 's/^set timeout=.*/set timeout=5/' \
+            -e 's/^menuentry "Lite Auto Cache - HTTP fast path (recommended)" {$/menuentry "Lite Auto Cache - HTTP fast path" {/' \
+            -e 's/^menuentry "Lite Auto Cache - TFTP recovery" {$/menuentry "Lite Auto Cache - restart-safe (recommended)" {/' \
             "$PXE/grub/grub.cfg"
     else
-        sed -i -E \
+        sed -i \
             -e 's/^set default=.*/set default=1/' \
             -e 's/^set fallback=.*/set fallback=0/' \
             -e 's/^set timeout=.*/set timeout=1/' \
+            -e 's/^menuentry "\(Start .*\) - HTTP fast path (recommended)" {$/menuentry "\1 - HTTP fast path" {/' \
+            -e 's/^menuentry "\(Start .*\) - TFTP recovery" {$/menuentry "\1 - restart-safe (recommended)" {/' \
             "$PXE/grub/grub.cfg"
     fi
     echo "  selected   grub TFTP kernel/initrd first (HTTP fallback)"

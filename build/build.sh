@@ -523,11 +523,11 @@ set default=0
 set fallback=1
 set timeout=5
 set timeout_style=menu
-menuentry "Start $DISTRO_NAME" {
+menuentry "Start $DISTRO_NAME - HTTP fast path (recommended)" {
     linux  (http,{{HTTP}})/thinclient/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd (http,{{HTTP}})/thinclient/initrd.img
 }
-menuentry "Start $DISTRO_NAME (TFTP)" {
+menuentry "Start $DISTRO_NAME - TFTP recovery" {
     linux  /thinclient/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd /thinclient/initrd.img
 }

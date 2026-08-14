@@ -656,7 +656,9 @@ Some UEFI NICs can TFTP after a warm reboot but time out on GRUB's first HTTP
 connection. The Debian Docker deployment automatically renders the menu with
 `--tftp-first` for those clients: the kernel and initrd load over TFTP, then
 Linux fetches the much larger squashfs over HTTP. The HTTP-first entry remains
-as the automatic fallback.
+as the automatic fallback. The selected menu item is labelled **Lite Auto
+Cache - restart-safe (recommended)** so the default is not misleadingly
+described as a recovery option.
 
 ### RAM requirements
 

@@ -25,7 +25,10 @@ and HTTP. Firmware downloads its small boot loader through TFTP. UEFI GRUB
 downloads the kernel and initrd through HTTP by default; legacy BIOS uses TFTP
 for those two files. Linux then transfers the much larger squashfs through
 HTTP. A TFTP-first UEFI compatibility mode remains available for NIC firmware
-that cannot establish GRUB's first HTTP connection reliably.
+that cannot establish GRUB's first HTTP connection reliably. The Docker
+deployment selects that compatibility mode and labels it **Lite Auto Cache -
+restart-safe (recommended)**; standalone rendered trees retain the HTTP-first
+recommendation unless `--tftp-first` is requested.
 
 The default **Lite Auto Cache** option can save a checksum-addressed squashfs
 to a removable USB partition labelled `TCCACHE`. A cache hit is verified while

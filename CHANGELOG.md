@@ -1,5 +1,12 @@
 # ThinClient changelog
 
+## Unreleased
+
+- Corrected the UEFI menu wording for Docker deployments: when the
+  warm-reboot-safe TFTP kernel/initrd path is selected by default, it is now
+  labelled as restart-safe and recommended instead of as a recovery option;
+  standalone HTTP-first menus keep their original recommendation.
+
 ## 1.4 — 2026-08-14
 
 ### Easier operation
