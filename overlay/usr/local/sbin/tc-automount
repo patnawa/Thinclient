@@ -27,8 +27,10 @@ label_for() {
 
 case "$ACTION" in
 add)
-    # The configuration partition is handled by tc-fetch-config, not here.
-    [ "$(blkid -o value -s LABEL "$DEV" 2>/dev/null)" = "TCCONF" ] && exit 0
+    # Configuration and PXE cache partitions have dedicated root-only helpers.
+    case "$(blkid -o value -s LABEL "$DEV" 2>/dev/null)" in
+        TCCONF|TCCACHE) exit 0 ;;
+    esac
     # The live medium we booted from is already mounted; leave it alone.
     findmnt -no TARGET "$DEV" >/dev/null 2>&1 && exit 0
 

@@ -24,8 +24,11 @@ for f in overlay/usr/local/bin/tc-session \
          overlay/usr/local/sbin/tc-save-config \
          overlay/usr/local/sbin/tc-prepare-support \
          overlay/usr/local/sbin/tc-automount \
+         overlay/usr/local/sbin/tc-cache-save \
          overlay/usr/local/sbin/tc-autoinstall \
          overlay/usr/local/sbin/tc-diag \
+         overlay/usr/lib/live/boot/9991-thinclient-cache.sh \
+         overlay/etc/initramfs-tools/hooks/thinclient-cache \
          overlay/etc/NetworkManager/dispatcher.d/50-thinclient; do
   [ -f "$f" ] || { echo "  MISS  $f"; fail=1; continue; }
   check_sh "$f" sh

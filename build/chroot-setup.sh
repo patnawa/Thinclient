@@ -65,6 +65,10 @@ opt_install() { log "optional: $1"; shift; apt-get install -y --no-install-recom
     wpasupplicant iw wireless-regdb
 [ "${INCLUDE_WIFI_FIRMWARE:-0}" = "1" ] && opt_install "wifi firmware blobs" \
     firmware-iwlwifi firmware-atheros firmware-brcm80211 firmware-mediatek
+[ "${INCLUDE_SOF_FIRMWARE:-0}" = "1" ] && opt_install "Intel SOF audio firmware" \
+    firmware-sof-signed
+[ "${INCLUDE_AMD_MICROCODE:-0}" = "1" ] && opt_install "AMD CPU microcode" \
+    amd64-microcode
 [ "${INCLUDE_SSH_SERVER:-0}" = "1" ] && opt_install "key-only remote support" \
     openssh-server
 [ "${INCLUDE_ADMIN_TOOLS:-0}" = "1" ] && opt_install "admin tools" \
@@ -168,9 +172,24 @@ needs_root_rights=auto
 EOF
 
 # ------------------------------------------------------------- initramfs -----
-sed -i 's/^MODULES=.*/MODULES=most/'   /etc/initramfs-tools/initramfs.conf
+case "${INITRAMFS_MODULES:-most}" in
+  most|dep|netboot|list) ;;
+  *) echo "FATAL: invalid INITRAMFS_MODULES=${INITRAMFS_MODULES}" >&2; exit 1 ;;
+esac
+sed -i "s/^MODULES=.*/MODULES=${INITRAMFS_MODULES:-most}/" /etc/initramfs-tools/initramfs.conf
 sed -i 's/^COMPRESS=.*/COMPRESS=zstd/' /etc/initramfs-tools/initramfs.conf
 grep -q '^COMPRESS=' /etc/initramfs-tools/initramfs.conf || echo 'COMPRESS=zstd' >> /etc/initramfs-tools/initramfs.conf
+
+if [ "${INITRAMFS_MODULES:-most}" = "list" ]; then
+  KMOD_VERSION="$(find /lib/modules -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -1)"
+  [ -n "$KMOD_VERSION" ] || { echo "FATAL: no installed kernel modules" >&2; exit 1; }
+  : > /etc/initramfs-tools/modules
+  for module in ${INITRAMFS_NET_MODULES:-}; do
+    modinfo -k "$KMOD_VERSION" "$module" >/dev/null 2>&1 \
+      || { echo "FATAL: requested initramfs module is unavailable: $module" >&2; exit 1; }
+    echo "$module" >> /etc/initramfs-tools/modules
+  done
+fi
 
 # --------------------------------------------------------------- services ----
 # Only stock packages here. Our own units are enabled by chroot-finalize.sh,

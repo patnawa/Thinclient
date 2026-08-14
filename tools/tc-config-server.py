@@ -165,6 +165,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    # A classroom/lab can power on dozens of PXE clients together. The stdlib
+    # default backlog is only 5, which can reject connections during that boot
+    # burst even though each accepted transfer runs in its own worker thread.
+    request_queue_size = 128
 
 
 def local_addresses():

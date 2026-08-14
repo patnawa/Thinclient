@@ -37,9 +37,7 @@ firmware-realtek
 firmware-bnx2
 firmware-bnx2x
 firmware-misc-nonfree
-firmware-sof-signed
 intel-microcode
-amd64-microcode
 
 # --- networking ---
 network-manager

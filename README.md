@@ -8,7 +8,7 @@
 approved connections, and gets out of the user's way.</p>
 
 <p>
-  <a href="build/config.sh"><img alt="Release 1.2" src="https://img.shields.io/badge/release-1.2-3478f6?style=flat-square"></a>
+  <a href="build/config.sh"><img alt="Release 1.3" src="https://img.shields.io/badge/release-1.3-3478f6?style=flat-square"></a>
   <a href="https://www.debian.org/"><img alt="Debian 13" src="https://img.shields.io/badge/Debian-13%20trixie-a81d33?style=flat-square&amp;logo=debian&amp;logoColor=white"></a>
   <a href="https://www.freerdp.com/"><img alt="FreeRDP 3" src="https://img.shields.io/badge/FreeRDP-3-2b6cb0?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22a06b?style=flat-square"></a>
@@ -27,7 +27,7 @@ approved connections, and gets out of the user's way.</p>
 
 ![ThinClient connection manager showing RDP and RemoteApp entries](docs/images/connection-manager.png)
 
-<p align="center"><sub>The connection manager from the verified 1.2 build.</sub></p>
+<p align="center"><sub>The connection manager from the verified 1.3 build.</sub></p>
 
 ThinClient boots from USB, an internal disk, or PXE. Its operating system lives
 in a read-only squashfs with ephemeral runtime state, so a fleet returns to the
@@ -65,7 +65,7 @@ sudo bash build/build.sh
 sudo bash build/verify-all.sh
 ```
 
-The result is `out/thinclient-amd64-1.2.iso`. See [Building](#building) for host
+The result is `out/thinclient-amd64-1.3.iso`. See [Building](#building) for host
 prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 [internal disk](#installing-to-a-clients-internal-disk), or
 [PXE](#deploying-by-pxe) deployment.
@@ -77,6 +77,7 @@ prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 | `build/` | The image builder plus its verification tools. Run on Debian/Ubuntu (WSL2 is fine). |
 | `overlay/` | Everything that gets laid on top of the base Debian filesystem. |
 | `pxe/` | Network-boot helpers and sample server configuration. |
+| `deploy/docker-pxe/` | TFTP + HTTP Docker Compose deployment for a Debian PXE host. |
 | `out/` | Build output: the ISO, the PXE tree, and test screenshots. Created by the build. |
 
 ---
@@ -167,7 +168,7 @@ sudo bash build/build.sh
 Verify the completed artifact before deployment:
 
 ```bash
-(cd out && sha256sum -c thinclient-amd64-1.2.iso.sha256)
+(cd out && sha256sum -c thinclient-amd64-1.3.iso.sha256)
 ```
 
 First build takes 15–30 minutes (it downloads a full Debian base plus packages).
@@ -207,11 +208,38 @@ sudo DEFAULT_SERVER=10.0.0.20 DEFAULT_TIMEZONE=Asia/Bangkok \
 | `INCLUDE_USB_REDIR` | `1` | Raw USB device redirection |
 | `INCLUDE_WIFI` | `1` | NetworkManager Wi-Fi tools and regulatory database |
 | `INCLUDE_WIFI_FIRMWARE` | `1` | Intel, Qualcomm/Atheros, Broadcom/Cypress, and MediaTek Wi-Fi firmware (~112 MiB in the ISO); core Realtek firmware remains installed for wired NICs |
+| `INCLUDE_SOF_FIRMWARE` | `1` | Intel Sound Open Firmware for newer systems; Ivy Bridge/Haswell use legacy HDA audio |
+| `INCLUDE_AMD_MICROCODE` | `1` | AMD CPU microcode; Intel microcode remains part of the core wired-client image |
 | `INCLUDE_SECUREBOOT` | `1` | Signed shim so Secure Boot can stay on |
 | `INCLUDE_ADMIN_TOOLS` | `1` | xterm, ssh client, htop for on-site support |
 | `INCLUDE_SSH_SERVER` | `1` | Install key-only remote support; port 22 stays closed until a key exists on `TCCONF` |
 | `SUPPORT_AUTHORIZED_KEYS_FILE` | empty | Public-key file to seed as `TCCONF/support/authorized_keys` |
+| `ENABLE_USB_CACHE` | `1` | Add a checksum-verified removable `TCCACHE` fallback for PXE root images |
+| `CACHE_LABEL` | `TCCACHE` | Dedicated FAT32, exFAT, or ext4 USB partition label |
+| `CACHE_PROFILE` | `default` | Cache namespace; the profile wrappers set this to `lite` or `full` |
 | `TCCONF_SIZE_MB` | `64` | Writable FAT32 settings partition embedded in raw-written USB images (`0` disables it) |
+| `INITRAMFS_MODULES` | `most` | Initramfs driver policy; the Lite PXE profile uses a tested wired-NIC and USB-storage list |
+
+### Smaller image for older wired PXE clients
+
+Ivy Bridge and Haswell-era OptiPlex systems do not benefit from modern Wi-Fi,
+SOF audio firmware, AMD microcode, printing, smart-card, VNC, raw-USB, SSH, or
+admin-tool packages. Build the wired RDP profile with:
+
+```bash
+sudo bash build/build-lite-pxe.sh
+```
+
+Its artifacts are written to `out/lite/`. The profile keeps Intel,
+Realtek and Broadcom wired NIC support, Intel graphics through Xorg's modesetting
+driver, RDP audio, BIOS and UEFI boot, Secure Boot, and the optional installer.
+It also changes the TFTP initrd from `MODULES=most` to an explicit set of
+common desktop and USB Ethernet drivers; all other kernel modules remain available
+after the HTTP squashfs becomes the root filesystem.
+
+This profile is intended for centrally configured, wired PXE clients. Use the
+standard image when Wi-Fi, printing, VNC, smart cards, raw USB redirection,
+remote SSH support, or persistent USB `TCCONF` storage is required.
 
 Before building — or after editing anything — run the static checks:
 
@@ -223,8 +251,8 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.2.iso     hybrid ISO: burn it, or dd it to a USB stick
-  thinclient-amd64-1.2.iso.sha256  exact release integrity/identity digest
+  thinclient-amd64-1.3.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.3.iso.sha256  exact release integrity/identity digest
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -356,7 +384,7 @@ embedded `TCCONF` to be writable.
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.2.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.3.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -471,10 +499,71 @@ partitioning, the copy and the bootloader all worked.
 
 ## Deploying by PXE
 
-Two moving parts: **TFTP** hands the client a bootloader and kernel, **HTTP**
-hands it the roughly 499 MiB root filesystem. HTTP is used for the big transfer because
-TFTP is painfully slow at that size, and because once `filesystem.squashfs` is in
-RAM the client no longer needs the server at all.
+Two moving parts: **TFTP** hands the client a bootloader, kernel, and initrd;
+**HTTP** hands it the much larger root filesystem. HTTP is used for the big
+transfer because TFTP is slow at that size, and because once
+`filesystem.squashfs` is in RAM the client no longer needs the server at all.
+
+### Full and Lite PXE profiles
+
+The Full profile keeps Wi-Fi firmware, printing, smart cards, USB redirection,
+support tools, and a broad initramfs. The Lite profile is intended for wired
+older desktops: it keeps RDP, sound, graphics, the installer, Secure Boot, and
+common Intel, Realtek, Broadcom, Atheros, Marvell, NVIDIA, and VIA Ethernet
+drivers, but removes fleet extras that do not help it PXE boot.
+
+```bash
+sudo bash build/build-full-pxe.sh
+sudo bash build/build-lite-pxe.sh
+sudo bash build/merge-pxe-profiles.sh
+```
+
+The merge creates `out/pxe-dual` with **Lite Auto Cache** as the default,
+**Lite Network Only** for a lone client with a slow USB stick, and **Full
+Drivers** as the compatibility choice, for both legacy BIOS and UEFI.
+The two profiles keep separate kernels, initrds, and squashfs files under
+`thinclient/lite/` and `thinclient/full/`.
+
+### Removable USB root cache for diskless clients
+
+The cache is optional and does not need an HDD. Prepare a dedicated USB
+partition as FAT32, exFAT, or ext4 and label it exactly `TCCACHE`. A 1 GB device
+is sufficient for Lite; use at least 2 GB if a client may cache both Lite and
+Full. A reliable 4 GB or larger USB 3 device is recommended.
+
+On Windows, select the USB partition carefully, then format it from Disk
+Management or File Explorer with the volume label `TCCACHE`. On Debian, first
+confirm the exact removable partition with `lsblk`; the `mkfs` command below
+erases that partition:
+
+```bash
+lsblk -o NAME,SIZE,TRAN,RM,FSTYPE,LABEL,MOUNTPOINTS
+sudo umount /dev/sdX1
+sudo mkfs.vfat -F 32 -n TCCACHE /dev/sdX1
+```
+
+On the first **Lite Auto Cache** boot, the normal HTTP root is used and a
+verified copy is saved to USB after startup at idle I/O priority. On later
+boots, the checksum embedded in the PXE menu selects that exact cached release;
+the image is verified while it is copied to RAM, so the USB is not the running
+root and can be removed after boot. A missing, corrupt, unsupported, or
+read-only cache automatically falls back to HTTP without preventing startup.
+
+For one machine, gigabit HTTP can be faster than an old USB 2 flash drive. Use
+**Lite Network Only** to bypass the cache in that case. During a 50-machine boot
+storm the server link is shared, while each USB reads independently, so the
+cache normally wins by a large margin.
+
+`TCCACHE` contains only public, immutable OS images. Settings remain separate
+on `TCCONF` or in the central configuration service. Never put passwords or
+private keys in either cached image or centrally served configuration.
+
+Validate the built initramfs and perform a real two-boot cache test with:
+
+```bash
+sudo WORKDIR=/opt/tcbuild-lite PXE_TREE=out/pxe-dual bash build/cachecheck.sh
+sudo PXE=out/pxe-dual bash build/cacheboottest.sh
+```
 
 ### 1. Point the configs at your server
 
@@ -493,6 +582,18 @@ configuration together:
 ```bash
 python3 tools/tc-config-server.py --root out/pxe --port 8080
 ```
+
+For an OPNsense network, the cleanest production layout is to leave DHCP on the
+firewall and run TFTP plus HTTP on a Debian Docker host. The included Compose
+deployment uses host networking for reliable TFTP transfers, retargets the boot
+menus to the Debian host, and documents the exact legacy ISC DHCP fields:
+
+```bash
+sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
+```
+
+See [`deploy/docker-pxe/README.md`](deploy/docker-pxe/README.md) for the file
+copy, firewall, OPNsense, verification, and upgrade steps.
 
 It prints the exact DHCP option 224 value to hand out, and logs every request
 with the client's MAC — which doubles as an inventory of what booted and when.
@@ -534,6 +635,12 @@ kernel and initrd over HTTP rather than TFTP—materially faster for a roughly 5
 initrd — and the menu carries `set fallback=1`, so if HTTP is unavailable the
 client drops to the TFTP entry by itself instead of sitting at a menu that
 nobody is standing in front of.
+
+Some UEFI NICs can TFTP after a warm reboot but time out on GRUB's first HTTP
+connection. The Debian Docker deployment automatically renders the menu with
+`--tftp-first` for those clients: the kernel and initrd load over TFTP, then
+Linux fetches the much larger squashfs over HTTP. The HTTP-first entry remains
+as the automatic fallback.
 
 ### RAM requirements
 

@@ -1,0 +1,22 @@
+#!/bin/sh
+set -e
+
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# live-boot does not always copy sha256sum, and MODULES=list intentionally
+# omits storage controllers. These are the tools/drivers needed to discover a
+# cache USB on Ivy Bridge/Haswell-era and newer desktop hardware.
+copy_exec /usr/bin/sha256sum /bin
+copy_exec /usr/bin/tee /bin
+copy_exec /usr/sbin/blkid /sbin
+
+for module in sd_mod usb_storage uas \
+              uhci_hcd ohci_hcd ohci_pci ehci_hcd ehci_pci \
+              xhci_hcd xhci_pci
+do
+    manual_add_modules "$module"
+done

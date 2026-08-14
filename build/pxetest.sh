@@ -17,8 +17,10 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${1:-bios}"
-PXE="$REPO/out/pxe"
-OUT="$REPO/out/pxetest-$MODE"
+PXE="${PXE:-$REPO/out/pxe}"
+OUT="${PXETEST_OUT:-$REPO/out/pxetest-$MODE}"
+CONFIG_SOURCE="${CONFIG_SOURCE:-$REPO/out/config.json}"
+EXPECT_SQUASH="${EXPECT_SQUASH:-1}"
 MON=/tmp/tc-pxe-monitor.sock
 PORT=8087
 
@@ -45,7 +47,7 @@ grep -q '{{HTTP}}' "$PXE/pxelinux.cfg/default" && {
 # --- central configuration, deliberately distinguishable --------------------
 # If the client shows this name, it can only have come from the server: it is
 # not the name compiled into the image.
-python3 - "$REPO/out/config.json" "$PXE/config.json" <<'PYEOF'
+python3 - "$CONFIG_SOURCE" "$PXE/config.json" <<'PYEOF'
 import json, sys
 cfg = json.load(open(sys.argv[1], encoding="utf-8"))
 cfg["connections"][0]["name"] = "CENTRAL CONFIG OK"
@@ -85,12 +87,17 @@ shoot() {
 
 # --- boot a diskless client over the network --------------------------------
 ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)
+read -r -a QEMU_EXTRA <<<"${QEMU_EXTRA_ARGS:-}"
 
 FIRMWARE=()
+NET_DEVICE="e1000,netdev=n0,bootindex=0"
 if [ "$MODE" = "uefi" ]; then
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
     FIRMWARE=(-drive "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd"
               -drive "if=pflash,format=raw,file=$OUT/vars.fd")
+    # QEMU otherwise attaches the legacy PXE option ROM, which OVMF cannot
+    # execute and silently skips before dropping to its internal shell.
+    NET_DEVICE="e1000,netdev=n0,bootindex=0,romfile=efi-e1000.rom"
 fi
 
 echo
@@ -98,11 +105,12 @@ echo "network booting a diskless client ($MODE, boot file: $BOOTFILE)"
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
     -m 2560 -smp 4 \
     -netdev "user,id=n0,tftp=$PXE,bootfile=$BOOTFILE" \
-    -device e1000,netdev=n0,bootindex=0 \
+    -device "$NET_DEVICE" \
     -boot n \
     -vga std -display none \
     -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/serial.log" \
+    "${QEMU_EXTRA[@]}" \
     > "$OUT/qemu.log" 2>&1 &
 QEMU=$!
 for _ in $(seq 1 30); do [ -S "$MON" ] && break; sleep 1; done
@@ -132,8 +140,13 @@ CLIENT_MAC=$(grep -oE '([0-9a-f]{2}:){5}[0-9a-f]{2}' "$OUT/server.log" 2>/dev/nu
 
 echo
 fail=0
-[ "$SQUASH_SERVED" -ge 1 ] && echo "  ok    the client fetched the squashfs over HTTP" \
-    || { echo "  FAIL  the squashfs was never requested"; fail=1; }
+if [ "$EXPECT_SQUASH" = 1 ]; then
+    [ "$SQUASH_SERVED" -ge 1 ] && echo "  ok    the client fetched the squashfs over HTTP" \
+        || { echo "  FAIL  the squashfs was never requested"; fail=1; }
+else
+    [ "$SQUASH_SERVED" -eq 0 ] && echo "  ok    the USB cache avoided the HTTP squashfs download" \
+        || { echo "  FAIL  the squashfs was unexpectedly requested"; fail=1; }
+fi
 [ "$CONFIG_SERVED" -ge 1 ] && echo "  ok    the client fetched central configuration" \
     || { echo "  FAIL  central configuration was never requested"; fail=1; }
 [ -n "$CLIENT_MAC" ] && echo "  ok    it identified itself as $CLIENT_MAC (per-device config would work)" \

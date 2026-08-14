@@ -41,7 +41,12 @@ else
     INITRD_GUEST="${INITRD#"$ROOTFS"}"
     INITRD_LIST="$(chroot "$ROOTFS" lsinitramfs "$INITRD_GUEST")"
 fi
-for module in e1000e r8169 r8152 ax88179_178a cdc_ncm; do
+if [ "$INITRAMFS_MODULES" = list ]; then
+    EARLY_MODULES="$INITRAMFS_NET_MODULES"
+else
+    EARLY_MODULES="e1000e r8169 r8152 ax88179_178a cdc_ncm"
+fi
+for module in $EARLY_MODULES; do
     if grep -Eq "/${module}\.ko(\.|$)" <<<"$INITRD_LIST"; then
         ok "$module is in initramfs"
     else

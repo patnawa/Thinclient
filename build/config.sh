@@ -5,7 +5,7 @@
 
 # ---------------------------------------------------------------- identity ---
 DISTRO_NAME="${DISTRO_NAME:-ThinClient}"
-DISTRO_VERSION="${DISTRO_VERSION:-1.2}"
+DISTRO_VERSION="${DISTRO_VERSION:-1.3}"
 IMAGE_NAME="${IMAGE_NAME:-thinclient-amd64}"
 
 # ------------------------------------------------------------------- base ----
@@ -30,10 +30,21 @@ INCLUDE_SMARTCARD="${INCLUDE_SMARTCARD:-1}"    # pcscd for /smartcard
 INCLUDE_USB_REDIR="${INCLUDE_USB_REDIR:-1}"    # libusb + urbdrc for /usb
 INCLUDE_WIFI="${INCLUDE_WIFI:-1}"              # wpa_supplicant + NM wifi support
 INCLUDE_WIFI_FIRMWARE="${INCLUDE_WIFI_FIRMWARE:-1}"  # Intel/Qualcomm/Broadcom/MediaTek Wi-Fi firmware
+INCLUDE_SOF_FIRMWARE="${INCLUDE_SOF_FIRMWARE:-1}" # audio DSP firmware for newer Intel systems
+INCLUDE_AMD_MICROCODE="${INCLUDE_AMD_MICROCODE:-1}" # AMD CPU microcode (Intel remains in core)
 INCLUDE_SECUREBOOT="${INCLUDE_SECUREBOOT:-1}"  # shim+grub signed -> boots with Secure Boot on
 INCLUDE_ADMIN_TOOLS="${INCLUDE_ADMIN_TOOLS:-1}" # xterm, openssh-client, nano for support staff
 INCLUDE_SSH_SERVER="${INCLUDE_SSH_SERVER:-1}"  # key-only support SSH; dormant until a public key exists
 SUPPORT_AUTHORIZED_KEYS_FILE="${SUPPORT_AUTHORIZED_KEYS_FILE:-}" # optional public-key file copied to TCCONF
+ENABLE_USB_CACHE="${ENABLE_USB_CACHE:-1}"      # reuse a verified squashfs from a removable TCCACHE USB
+CACHE_LABEL="${CACHE_LABEL:-TCCACHE}"          # FAT32/exFAT/ext4 partition label used only for image caching
+CACHE_PROFILE="${CACHE_PROFILE:-default}"      # isolated cache namespace (e.g. lite or full)
+
+# "most" is safest for the full-driver image. The Lite PXE profile uses
+# "list" and carries common desktop Ethernet drivers; every kernel module is
+# still present in the squashfs and becomes available after Linux pivots root.
+INITRAMFS_MODULES="${INITRAMFS_MODULES:-most}"
+INITRAMFS_NET_MODULES="${INITRAMFS_NET_MODULES:-8139cp 8139too alx asix atl1c atl1e ax88179_178a bnx2 bnx2x cdc_ether cdc_ncm e1000 e1000e forcedeth hv_netvsc igb igc jme pcnet32 r8152 r8169 sis900 sky2 tg3 via-rhine via-velocity virtio_net vmxnet3}"
 
 # A small writable FAT32 partition is appended to the hybrid image. When the
 # image is written raw to USB, settings work immediately without repartitioning.

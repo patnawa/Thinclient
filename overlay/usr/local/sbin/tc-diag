@@ -74,6 +74,17 @@ fi
 echo "--- network ---"
 ip -brief address 2>/dev/null | grep -v '^lo'
 
+echo "--- USB root cache ---"
+if [ -r /run/initramfs/tc-cache-status ]; then
+    sed 's/^/  boot: /' /run/initramfs/tc-cache-status
+else
+    echo "  disabled or no status"
+fi
+if [ -r /run/thinclient/cache-status ]; then
+    sed 's/^/  saver: /' /run/thinclient/cache-status
+fi
+systemctl is-active tc-cache-save.service 2>/dev/null | sed 's/^/  service: /'
+
 echo "--- errors this boot ---"
 journalctl -b -p err --no-pager 2>/dev/null | tail -12
 

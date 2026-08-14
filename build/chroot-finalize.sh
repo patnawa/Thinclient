@@ -17,6 +17,10 @@ systemctl enable thinclient.service >/dev/null 2>&1 || {
 systemctl enable tc-config.service  >/dev/null 2>&1 || {
   echo "FATAL: tc-config.service missing from the overlay" >&2; exit 1;
 }
+# Conditioned on tc.cache=1; machines without the parameter pay nothing.
+systemctl enable tc-cache-save.service >/dev/null 2>&1 || {
+  echo "FATAL: tc-cache-save.service missing from the overlay" >&2; exit 1;
+}
 # Conditioned on tc.debug=1, so it costs a production boot nothing.
 systemctl enable tc-diag.service >/dev/null 2>&1 || true
 # Conditioned on tc.install.auto=1; it erases a disk, so it must never be able
@@ -31,7 +35,9 @@ log "checking the overlay"
 for f in /usr/local/bin/tc-session /usr/local/bin/tc-connect \
          /usr/local/sbin/tc-fetch-config /usr/local/sbin/tc-save-config \
          /usr/local/sbin/tc-apply-config /usr/local/sbin/tc-automount \
-         /usr/local/sbin/tc-prepare-support \
+         /usr/local/sbin/tc-cache-save /usr/local/sbin/tc-prepare-support \
+         /usr/lib/live/boot/9991-thinclient-cache.sh \
+         /etc/initramfs-tools/hooks/thinclient-cache \
          /usr/local/sbin/tc-install /usr/local/sbin/tc-diag \
          /usr/local/lib/thinclient/manager.py /usr/local/lib/thinclient/settings.py \
          /usr/local/lib/thinclient/networkdiag.py \
@@ -52,6 +58,9 @@ paths = (
     "/usr/local/sbin/tc-save-config",
     "/usr/local/sbin/tc-apply-config",
     "/usr/local/sbin/tc-fetch-config",
+    "/usr/local/sbin/tc-cache-save",
+    "/usr/lib/live/boot/9991-thinclient-cache.sh",
+    "/etc/initramfs-tools/hooks/thinclient-cache",
     "/usr/local/sbin/tc-install",
     "/etc/NetworkManager/dispatcher.d/50-thinclient",
     "/etc/ssh/sshd_config.d/10-thinclient-support.conf",
@@ -84,7 +93,9 @@ done
 for f in /usr/local/bin/tc-session /usr/local/bin/tc-connect \
          /usr/local/sbin/tc-fetch-config /usr/local/sbin/tc-save-config \
          /usr/local/sbin/tc-apply-config /usr/local/sbin/tc-automount \
-         /usr/local/sbin/tc-prepare-support \
+         /usr/local/sbin/tc-cache-save /usr/local/sbin/tc-prepare-support \
+         /usr/lib/live/boot/9991-thinclient-cache.sh \
+         /etc/initramfs-tools/hooks/thinclient-cache \
          /etc/NetworkManager/dispatcher.d/50-thinclient; do
   [ -x "$f" ] || { echo "FATAL: $f is not executable" >&2; exit 1; }
 done
@@ -100,11 +111,25 @@ python3 -m py_compile /usr/local/lib/thinclient/tcconfig.py \
 python3 -c 'import json; json.load(open("/etc/thinclient/config.json"))'
 for s in /usr/local/bin/tc-session /usr/local/sbin/tc-fetch-config \
          /usr/local/sbin/tc-save-config /usr/local/sbin/tc-automount \
-         /usr/local/sbin/tc-prepare-support \
+         /usr/local/sbin/tc-cache-save /usr/local/sbin/tc-prepare-support \
+         /usr/lib/live/boot/9991-thinclient-cache.sh \
+         /etc/initramfs-tools/hooks/thinclient-cache \
          /etc/NetworkManager/dispatcher.d/50-thinclient; do
   sh -n "$s" || { echo "FATAL: shell syntax error in $s" >&2; exit 1; }
 done
 find / -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+
+# Keep Debian's downloader intact under a private name. The later live-boot
+# component wraps it with a checksum-verified USB cache lookup.
+if grep -q '^do_httpmount_network ()' /usr/lib/live/boot/9990-mount-http.sh; then
+  : # Idempotent when reusing a prepared build root.
+elif grep -q '^do_httpmount ()' /usr/lib/live/boot/9990-mount-http.sh; then
+  sed -i '0,/^do_httpmount ()/s//do_httpmount_network ()/' \
+    /usr/lib/live/boot/9990-mount-http.sh
+else
+  echo "FATAL: Debian live-boot HTTP function was not found" >&2
+  exit 1
+fi
 
 # The manager must be able to import GTK, or the client boots to a black screen.
 python3 -c 'import gi; gi.require_version("Gtk","3.0"); from gi.repository import Gtk' \

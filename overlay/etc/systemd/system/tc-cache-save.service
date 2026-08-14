@@ -1,0 +1,15 @@
+[Unit]
+Description=Save the PXE root image to removable USB cache
+ConditionKernelCommandLine=tc.cache=1
+After=tc-config.service local-fs.target
+Wants=tc-config.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tc-cache-save
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

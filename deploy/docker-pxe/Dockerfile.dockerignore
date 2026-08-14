@@ -1,0 +1,7 @@
+**
+!deploy/
+!deploy/docker-pxe/
+!deploy/docker-pxe/Dockerfile
+!deploy/docker-pxe/container-entrypoint.sh
+!tools/
+!tools/tc-config-server.py

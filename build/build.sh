@@ -85,8 +85,14 @@ in_chroot() {
     INCLUDE_VNC="$INCLUDE_VNC" \
     INCLUDE_USB_REDIR="$INCLUDE_USB_REDIR" INCLUDE_WIFI="$INCLUDE_WIFI" \
     INCLUDE_WIFI_FIRMWARE="$INCLUDE_WIFI_FIRMWARE" \
+    INCLUDE_SOF_FIRMWARE="$INCLUDE_SOF_FIRMWARE" \
+    INCLUDE_AMD_MICROCODE="$INCLUDE_AMD_MICROCODE" \
     INCLUDE_ADMIN_TOOLS="$INCLUDE_ADMIN_TOOLS" \
     INCLUDE_SSH_SERVER="$INCLUDE_SSH_SERVER" \
+    INITRAMFS_MODULES="$INITRAMFS_MODULES" \
+    INITRAMFS_NET_MODULES="$INITRAMFS_NET_MODULES" \
+    ENABLE_USB_CACHE="$ENABLE_USB_CACHE" CACHE_LABEL="$CACHE_LABEL" \
+    CACHE_PROFILE="$CACHE_PROFILE" \
     DEFAULT_TIMEZONE="$DEFAULT_TIMEZONE" DEFAULT_KEYMAP="$DEFAULT_KEYMAP" \
     DEFAULT_NTP="$DEFAULT_NTP" \
     /bin/bash "$1"
@@ -107,6 +113,7 @@ while IFS= read -r -d '' f; do
   esac
 done < <(find "$ROOTFS/etc/thinclient" "$ROOTFS/usr/local" "$ROOTFS/etc/systemd" \
               "$ROOTFS/etc/udev" "$ROOTFS/etc/X11" "$ROOTFS/etc/NetworkManager" \
+              "$ROOTFS/etc/initramfs-tools" "$ROOTFS/usr/lib/live" \
               "$ROOTFS/etc/sudoers.d" "$ROOTFS/etc/openbox" "$ROOTFS/etc/ssh" \
               -type f -print0 2>/dev/null)
 
@@ -130,6 +137,8 @@ done < <(find "$REPO_DIR/overlay" -type f ! -path '*/__pycache__/*' -print0)
 # Executable bits do not survive a Windows filesystem; set them explicitly.
 chmod 0755 "$ROOTFS"/usr/local/bin/* "$ROOTFS"/usr/local/sbin/* 2>/dev/null || true
 chmod 0755 "$ROOTFS"/etc/NetworkManager/dispatcher.d/* 2>/dev/null || true
+chmod 0755 "$ROOTFS"/etc/initramfs-tools/hooks/* 2>/dev/null || true
+chmod 0755 "$ROOTFS"/usr/lib/live/boot/9991-thinclient-cache.sh 2>/dev/null || true
 # DrvFS commonly presents repository files and newly created directories as
 # 0777. Normalize complete unit/drop-in trees: a writable systemd or sshd
 # configuration would let the kiosk user defeat service security policy.
@@ -203,6 +212,18 @@ mksquashfs "$ROOTFS" "$IMAGE/live/filesystem.squashfs" \
 
 printf '%s' "$(du -sx --block-size=1 "$ROOTFS" | cut -f1)" > "$IMAGE/live/filesystem.size"
 SQUASH_MB=$(( $(stat -c%s "$IMAGE/live/filesystem.squashfs") / 1024 / 1024 ))
+SQUASH_SHA="$(sha256sum "$IMAGE/live/filesystem.squashfs" | awk '{print $1}')"
+printf '%s  filesystem.squashfs\n' "$SQUASH_SHA" \
+  > "$IMAGE/live/filesystem.squashfs.sha256"
+CACHE_CMDLINE=""
+case "$ENABLE_USB_CACHE" in 0|1) ;; *) die "ENABLE_USB_CACHE must be 0 or 1" ;; esac
+printf '%s' "$CACHE_PROFILE" | grep -Eq '^[A-Za-z0-9._-]{1,32}$' \
+  || die "CACHE_PROFILE must contain only letters, numbers, dot, underscore or dash"
+printf '%s' "$CACHE_LABEL" | grep -Eq '^[A-Za-z0-9._-]{1,32}$' \
+  || die "CACHE_LABEL must contain only letters, numbers, dot, underscore or dash"
+if [ "$ENABLE_USB_CACHE" = 1 ]; then
+  CACHE_CMDLINE="tc.cache=1 tc.cache.label=$CACHE_LABEL tc.cache.profile=$CACHE_PROFILE tc.cache.sha256=$SQUASH_SHA"
+fi
 log "stage 3  squashfs = ${SQUASH_MB} MB"
 
 # ================================================================ stage 4 ====
@@ -425,6 +446,7 @@ rm -rf "$PXE"; mkdir -p "$PXE/thinclient" "$PXE/pxelinux.cfg" "$PXE/grub"
 cp "$IMAGE/live/vmlinuz"            "$PXE/thinclient/vmlinuz"
 cp "$IMAGE/live/initrd.img"         "$PXE/thinclient/initrd.img"
 cp "$IMAGE/live/filesystem.squashfs" "$PXE/thinclient/filesystem.squashfs"
+cp "$IMAGE/live/filesystem.squashfs.sha256" "$PXE/thinclient/filesystem.squashfs.sha256"
 
 # --- BIOS netboot: pxelinux plus the modules it loads at runtime -------------
 MISSING_PXE=""
@@ -475,7 +497,7 @@ LABEL live
   MENU LABEL ^Start $DISTRO_NAME
   MENU DEFAULT
   KERNEL thinclient/vmlinuz
-  APPEND initrd=thinclient/initrd.img $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+  APPEND initrd=thinclient/initrd.img $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
 
 LABEL nfs
   MENU LABEL Start $DISTRO_NAME (^NFS root)
@@ -485,7 +507,7 @@ LABEL nfs
 LABEL debug
   MENU LABEL Start with ^diagnostic console
   KERNEL thinclient/vmlinuz
-  APPEND initrd=thinclient/initrd.img boot=live components union=overlay tc.debug=1 ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+  APPEND initrd=thinclient/initrd.img boot=live components union=overlay tc.debug=1 $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
 EOF
 
 cat > "$PXE/grub/grub.cfg" <<EOF
@@ -497,11 +519,11 @@ set fallback=1
 set timeout=5
 set timeout_style=menu
 menuentry "Start $DISTRO_NAME" {
-    linux  (http,{{HTTP}})/thinclient/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+    linux  (http,{{HTTP}})/thinclient/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd (http,{{HTTP}})/thinclient/initrd.img
 }
 menuentry "Start $DISTRO_NAME (TFTP)" {
-    linux  /thinclient/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+    linux  /thinclient/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd /thinclient/initrd.img
 }
 EOF
@@ -510,7 +532,7 @@ cat > "$PXE/boot.ipxe" <<EOF
 #!ipxe
 dhcp
 set base http://{{HTTP}}/thinclient
-kernel \${base}/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=\${base}/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+kernel \${base}/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=\${base}/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
 initrd \${base}/initrd.img
 boot
 EOF
