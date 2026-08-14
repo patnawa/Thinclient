@@ -52,4 +52,3 @@ jobs:
             .
           docker push "$image:$version"
           docker push "$image:latest"
-
