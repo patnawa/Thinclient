@@ -6,15 +6,61 @@ CMDLINE_FILE="${TC_CACHE_CMDLINE_FILE:-/proc/cmdline}"
 STATUS_FILE="${TC_CACHE_STATUS_FILE:-/run/initramfs/tc-cache-status}"
 LIVE_MEDIUM="${TC_CACHE_LIVE_MEDIUM:-/run/live/medium}"
 CACHE_MOUNT="${TC_CACHE_MOUNT_DIR:-/run/thinclient/cache-media}"
+SAVE_STATUS_FILE="${TC_CACHE_SAVE_STATUS_FILE:-/run/thinclient/cache-status}"
+PROGRESS_FILE="${TC_CACHE_PROGRESS_FILE:-/run/thinclient/cache-progress}"
 MOUNTED=0
 TEMP_FILE=""
+HASH_FILE=""
+COPY_PID=""
+PROGRESS_TEMP=""
+STATUS_TEMP=""
 
 log() { echo "tc-cache-save: $*"; }
 cleanup() {
+    if [ -n "$COPY_PID" ]; then
+        kill "$COPY_PID" 2>/dev/null || true
+        wait "$COPY_PID" 2>/dev/null || true
+    fi
     [ -z "$TEMP_FILE" ] || rm -f -- "$TEMP_FILE"
+    [ -z "$HASH_FILE" ] || rm -f -- "$HASH_FILE"
+    [ -z "$PROGRESS_TEMP" ] || rm -f -- "$PROGRESS_TEMP"
+    [ -z "$STATUS_TEMP" ] || rm -f -- "$STATUS_TEMP"
+    rm -f -- "$PROGRESS_FILE"
     [ "$MOUNTED" -eq 0 ] || umount "$CACHE_MOUNT" 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
+
+write_progress() {
+    percent="$1"
+    bytes="$2"
+    total="$3"
+    PROGRESS_TEMP="$(mktemp "${PROGRESS_FILE}.tmp.XXXXXX")" || return 1
+    {
+        printf 'state=saving\n'
+        printf 'profile=%s\n' "$PROFILE"
+        printf 'percent=%s\n' "$percent"
+        printf 'bytes=%s\n' "$bytes"
+        printf 'total=%s\n' "$total"
+        printf 'device=%s\n' "$DEVICE"
+    } > "$PROGRESS_TEMP" || return 1
+    chmod 0644 "$PROGRESS_TEMP" 2>/dev/null || true
+    mv -f -- "$PROGRESS_TEMP" "$PROGRESS_FILE" || return 1
+    PROGRESS_TEMP=""
+}
+
+write_saved_status() {
+    mkdir -p "$(dirname "$SAVE_STATUS_FILE")"
+    STATUS_TEMP="$(mktemp "${SAVE_STATUS_FILE}.tmp.XXXXXX")" || return 1
+    {
+        printf 'state=saved\n'
+        printf 'profile=%s\n' "$PROFILE"
+        printf 'sha256=%s\n' "$EXPECTED"
+        printf 'device=%s\n' "$DEVICE"
+    } > "$STATUS_TEMP" || return 1
+    chmod 0644 "$STATUS_TEMP" 2>/dev/null || true
+    mv -f -- "$STATUS_TEMP" "$SAVE_STATUS_FILE" || return 1
+    STATUS_TEMP=""
+}
 
 arg() {
     key="$1"
@@ -73,13 +119,37 @@ for DEVICE in $(blkid -t "LABEL=$LABEL" -o device 2>/dev/null | sort -u); do
     TARGET="$CACHE_DIR/$EXPECTED.squashfs"
 
     if [ -f "$TARGET" ] && [ "$(sha256sum "$TARGET" | sed 's/[[:space:]].*$//')" = "$EXPECTED" ]; then
+        write_saved_status || exit 1
         log "$PROFILE is already cached on $DEVICE"
         exit 0
     fi
 
     TEMP_FILE="$(mktemp "$CACHE_DIR/.${EXPECTED}.part.XXXXXX")" || exit 1
     log "saving $PROFILE to $DEVICE"
-    ACTUAL="$(tee "$TEMP_FILE" < "$SOURCE" | sha256sum | sed 's/[[:space:]].*$//')"
+    mkdir -p "$(dirname "$PROGRESS_FILE")"
+    TOTAL_BYTES="$(wc -c < "$SOURCE" | tr -d '[:space:]')"
+    HASH_FILE="$(mktemp "$(dirname "$PROGRESS_FILE")/cache-hash.XXXXXX")" || exit 1
+    write_progress 0 0 "$TOTAL_BYTES"
+    (tee "$TEMP_FILE" < "$SOURCE" | sha256sum > "$HASH_FILE") &
+    COPY_PID=$!
+    while kill -0 "$COPY_PID" 2>/dev/null; do
+        COPIED_BYTES="$(wc -c < "$TEMP_FILE" 2>/dev/null | tr -d '[:space:]')"
+        [ -n "$COPIED_BYTES" ] || COPIED_BYTES=0
+        if [ "$TOTAL_BYTES" -gt 0 ]; then
+            PERCENT=$((COPIED_BYTES * 100 / TOTAL_BYTES))
+            [ "$PERCENT" -le 99 ] || PERCENT=99
+        else
+            PERCENT=0
+        fi
+        write_progress "$PERCENT" "$COPIED_BYTES" "$TOTAL_BYTES"
+        sleep 1
+    done
+    wait "$COPY_PID" || { COPY_PID=""; log "cache copy failed"; exit 1; }
+    COPY_PID=""
+    ACTUAL="$(sed 's/[[:space:]].*$//' "$HASH_FILE")"
+    rm -f -- "$HASH_FILE"
+    HASH_FILE=""
+    write_progress 100 "$TOTAL_BYTES" "$TOTAL_BYTES"
     if [ "$ACTUAL" != "$EXPECTED" ]; then
         log "downloaded squashfs checksum mismatch; cache was not changed"
         exit 1
@@ -100,9 +170,7 @@ for DEVICE in $(blkid -t "LABEL=$LABEL" -o device 2>/dev/null | sort -u); do
         rm -f -- "$OLD"
     done
 
-    mkdir -p /run/thinclient
-    printf 'saved %s %s %s\n' "$PROFILE" "$EXPECTED" "$DEVICE" \
-        > /run/thinclient/cache-status
+    write_saved_status || exit 1
     log "$PROFILE cache saved and verified"
     exit 0
 done

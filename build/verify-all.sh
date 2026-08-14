@@ -32,16 +32,19 @@ step "permissions (as the kiosk user)" bash "$REPO/build/permcheck.sh"
 step "FreeRDP options"    bash "$REPO/build/rdpcheck.sh"
 step "connection manager renders" quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-preview.png"
 step "settings dialog renders"    quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-settings.png" settings
-step "About dialog renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-about.png" about
+step "Help dialog renders"        quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-about.png" about
 step "network test renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-network-test.png" network-test
+step "admin dialog renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-admin.png" admin
+step "progress dialog renders"    quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-progress.png" progress
+step "error dialog renders"       quiet bash "$REPO/build/uitest.sh" "$REPO/out/ui-error.png" error
+step "old monitor renders"        quiet env TC_UI_SCREEN=1024x768 bash "$REPO/build/uitest.sh" "$REPO/out/ui-1024x768.png"
 step "real RDP session"   quiet bash "$REPO/build/rdpsession-test.sh"
 step "boot: BIOS"         quiet bash "$REPO/build/boottest.sh" bios
 step "boot: UEFI"         quiet bash "$REPO/build/boottest.sh" uefi
 step "boot: Secure Boot"  quiet bash "$REPO/build/boottest.sh" secureboot
-# Seven tabs from the initially selected connection reaches Shut Down. Keep this
-# explicit because Restart immediately precedes it and a stale count can reboot
-# the VM while falsely reporting that poweroff is broken.
-step "shut down button"   bash "$REPO/build/shutdowntest.sh" 7
+# Four tabs from the selected card reaches Power; the shutdown test then chooses
+# Shut down inside the safe, Cancel-default power dialog.
+step "shut down button"   bash "$REPO/build/shutdowntest.sh" 4
 step "install: BIOS"      quiet bash "$REPO/build/installtest.sh" bios
 step "install: UEFI"      quiet bash "$REPO/build/installtest.sh" uefi
 step "PXE: BIOS + central config" bash "$REPO/build/pxetest.sh" bios

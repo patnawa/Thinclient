@@ -4,6 +4,10 @@ This document preserves the reasoning and repeatable checks behind the current
 design. Keep site addresses, passwords, customer names, and deployment-specific
 paths in an ignored `docs/*.local.md` file instead of this public document.
 
+The implemented normal-user and administrator interaction baseline, privacy
+rules, rendering matrix, and next UI studies are recorded in
+[`UI-UX.md`](UI-UX.md).
+
 ## Current release architecture
 
 ThinClient 1.3 provides two independently versioned x86-64 images:
@@ -17,8 +21,11 @@ ThinClient 1.3 provides two independently versioned x86-64 images:
 
 The merged PXE tree supports legacy BIOS and UEFI. OPNsense or another existing
 DHCP server remains authoritative; the Debian Docker host provides only TFTP
-and HTTP. Firmware downloads its boot loader, kernel, and initrd through TFTP.
-Linux then transfers the much larger squashfs through HTTP.
+and HTTP. Firmware downloads its small boot loader through TFTP. UEFI GRUB
+downloads the kernel and initrd through HTTP by default; legacy BIOS uses TFTP
+for those two files. Linux then transfers the much larger squashfs through
+HTTP. A TFTP-first UEFI compatibility mode remains available for NIC firmware
+that cannot establish GRUB's first HTTP connection reliably.
 
 The default **Lite Auto Cache** option can save a checksum-addressed squashfs
 to a removable USB partition labelled `TCCACHE`. A cache hit is verified while

@@ -3,14 +3,16 @@
 # Catches GTK mistakes in seconds instead of after a 4-minute image build.
 #   bash build/uitest.sh [output.png]
 #   bash build/uitest.sh out.png settings    # screenshot the Settings dialog
-#   bash build/uitest.sh out.png about       # screenshot About and hardware
+#   bash build/uitest.sh out.png about       # screenshot public Help/support
 #   bash build/uitest.sh out.png network-test # screenshot on-demand preflight
+#   TC_UI_SCREEN=1024x768 bash build/uitest.sh out.png manager
 set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 SHOT="${1:-/tmp/tc-ui.png}"
 MODE="${2:-manager}"
 DISP=:99
+SCREEN="${TC_UI_SCREEN:-1280x800}"
 
 command -v Xvfb >/dev/null || { echo "install xvfb"; exit 1; }
 command -v import >/dev/null || { echo "install imagemagick"; exit 1; }
@@ -24,6 +26,7 @@ sed 's/\r$//' "$REPO/overlay/etc/thinclient/config.json" > /etc/thinclient/confi
 cat > /etc/thinclient/build-info <<EOF
 name=$DISTRO_NAME
 version=$DISTRO_VERSION
+profile=lite
 base=Debian $SUITE
 freerdp=3.15.0+dfsg-2.1
 kernel=6.12.101-1
@@ -34,14 +37,16 @@ python3 - <<'PYEOF'
 import json, copy
 c = json.load(open("/etc/thinclient/config.json"))
 extra = copy.deepcopy(c["connections"][0])
-extra.update({"id": "acct", "name": "Accounting (RemoteApp)", "host": "10.0.0.32",
-              "domain": "CORP", "username": "svc-acct", "display": "multimon"})
+extra.update({"id": "acct", "name": "Accounting", "host": "10.0.0.32",
+              "description": "Published finance application", "group": "Applications",
+              "app": "||Accounting", "domain": "CORP", "username": "svc-acct",
+              "display": "multimon"})
 c["connections"].append(extra)
 json.dump(c, open("/etc/thinclient/config.json", "w"), indent=2)
 PYEOF
 
 pkill -f "Xvfb $DISP" 2>/dev/null
-Xvfb "$DISP" -screen 0 1280x800x24 >/dev/null 2>&1 &
+Xvfb "$DISP" -screen 0 "${SCREEN}x24" >/dev/null 2>&1 &
 XVFB=$!
 sleep 2
 
@@ -142,6 +147,7 @@ Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", Tru
 # avoid publishing the build workstation's hostname, address, or hardware.
 manager.socket.gethostname = lambda: "TC-DEMO-01"
 manager.primary_ip = lambda: "192.168.10.42"
+manager.active_link_summary = lambda: "1 Gb/s"
 manager.hardware_info = lambda: {
     "Architecture": "x86_64",
     "Processor": "Intel(R) Core(TM) i5-8250U · 8 logical CPUs",
@@ -158,6 +164,35 @@ GLib.timeout_add(500, lambda: (window.on_about(), False)[1])
 Gtk.main()
 PYEOF
   DISPLAY=$DISP python3 /tmp/tc-about-driver.py > /tmp/tc-ui.log 2>&1 &
+elif [ "$MODE" = "admin" ] || [ "$MODE" = "progress" ] || [ "$MODE" = "error" ]; then
+  cat > /tmp/tc-dialog-driver.py <<PYEOF
+import sys
+sys.path.insert(0, "/usr/local/lib/thinclient")
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk
+import manager
+
+provider = Gtk.CssProvider(); provider.load_from_data(manager.CSS)
+Gtk.StyleContext.add_provider_for_screen(
+    Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
+parent = Gtk.Window(); parent.show()
+connection = {"id": "main", "name": "Windows Server 2025"}
+mode = "$MODE"
+if mode == "admin":
+    dialog = manager.AdminDialog(parent)
+elif mode == "progress":
+    dialog = manager.ConnectionProgressDialog(parent, connection, lambda: None)
+    dialog.set_stage("Contacting server", "Checking Windows Server 2025 on port 3389…")
+else:
+    dialog = manager.ConnectionErrorDialog(
+        parent, connection,
+        "The server did not respond on port 3389. Check the server, firewall, and network route.")
+dialog.show_all()
+Gtk.main()
+PYEOF
+  DISPLAY=$DISP python3 /tmp/tc-dialog-driver.py > /tmp/tc-ui.log 2>&1 &
 elif [ "$MODE" = "network-test" ]; then
   cat > /tmp/tc-network-test-driver.py <<'PYEOF'
 import sys
@@ -205,6 +240,7 @@ sys.path.insert(0, "/usr/local/lib/thinclient")
 import manager
 manager.socket.gethostname = lambda: "TC-DEMO-01"
 manager.primary_ip = lambda: "192.168.10.42"
+manager.active_link_summary = lambda: "1 Gb/s"
 manager.main()
 PYEOF
   DISPLAY=$DISP python3 /tmp/tc-manager-driver.py > /tmp/tc-ui.log 2>&1 &
@@ -217,6 +253,9 @@ if ! kill -0 "$APP" 2>/dev/null; then
   kill "$OB" "$XVFB" 2>/dev/null; exit 1
 fi
 
+# Keep hover tooltips out of deterministic screenshots when xdotool is present.
+command -v xdotool >/dev/null && DISPLAY=$DISP xdotool mousemove 2 2 2>/dev/null
+sleep 1
 DISPLAY=$DISP import -window root "$SHOT" 2>/dev/null
 echo "screenshot: $SHOT"
 DISPLAY=$DISP xwininfo -root -children 2>/dev/null | grep -c '0x' | \

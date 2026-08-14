@@ -73,6 +73,8 @@ KEYBOARD_LAYOUT_IDS = {
 CONNECTION_DEFAULTS = {
     "id": "",
     "name": "",
+    "group": "Connections",
+    "description": "",
     "protocol": "rdp",          # rdp | vnc
     "host": "",
     "port": 3389,
@@ -110,7 +112,7 @@ DEVICE_BOOLEAN_FIELDS = (
     "allow_settings", "allow_console", "allow_terminal", "session_bar", "show_ip",
 )
 CONNECTION_STRING_FIELDS = (
-    "id", "name", "host", "username", "domain", "password", "gateway",
+    "id", "name", "group", "description", "host", "username", "domain", "password", "gateway",
     "gateway_username", "gateway_domain", "app",
 )
 CONNECTION_BOOLEAN_FIELDS = (

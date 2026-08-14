@@ -102,6 +102,8 @@ class ConfigValidation(unittest.TestCase):
                 {
                     "id": {"not": "hashable"},
                     "name": ["not text"],
+                    "description": ["not text"],
+                    "group": {"not": "text"},
                     "host": "  server.example.com  ",
                     "username": False,
                     "password": "  significant whitespace  ",
@@ -133,6 +135,8 @@ class ConfigValidation(unittest.TestCase):
         self.assertTrue(canonical["id"])
         self.assertEqual("server.example.com", canonical["host"])
         self.assertEqual("server.example.com", canonical["name"])
+        self.assertEqual("", canonical["description"])
+        self.assertEqual("Connections", canonical["group"])
         self.assertEqual("", canonical["username"])
         self.assertEqual("  significant whitespace  ", canonical["password"])
         self.assertEqual(

@@ -6,6 +6,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
+EXPECTED_CONFIG="${EXPECTED_CONFIG:-${OUTDIR:-$REPO/out}/config.json}"
 
 [ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
 command -v xorriso >/dev/null || { echo "missing xorriso"; exit 1; }
@@ -14,6 +15,9 @@ if [ "$TCCONF_SIZE_MB" = "0" ]; then
     echo "TCCONF is disabled for this build (TCCONF_SIZE_MB=0)"
     exit 0
 fi
+[ -f "$EXPECTED_CONFIG" ] || {
+    echo "missing $EXPECTED_CONFIG - use the config.json exported with this ISO"; exit 1;
+}
 command -v mtype >/dev/null || { echo "missing mtype (install mtools)"; exit 1; }
 
 REPORT="$(xorriso -indev "$ISO" -report_system_area plain 2>/dev/null)"
@@ -50,7 +54,7 @@ with open(sys.argv[1], encoding="utf-8") as stream:
     expected = json.load(stream)
 if embedded != expected:
     raise SystemExit("embedded config.json differs from out/config.json")
-' "$REPO/out/config.json"
+' "$EXPECTED_CONFIG"
 
 echo "IMAGE CHECK PASSED"
 echo "  partition 3: TCCONF, ${TCCONF_SIZE_MB} MiB FAT32"

@@ -19,6 +19,7 @@ import threading  # noqa: E402
 sys.path.insert(0, "/usr/local/lib/thinclient")
 import tcconfig  # noqa: E402
 import networkdiag  # noqa: E402
+import uxstate  # noqa: E402
 
 TIMEZONES = [
     "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Asia/Shanghai", "Asia/Kolkata",
@@ -91,8 +92,8 @@ class SettingsDialog(Gtk.Dialog):
         super().__init__(title="Settings", transient_for=parent, modal=True)
         self.set_default_size(940, 660)
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        save = self.add_button("Save", Gtk.ResponseType.OK)
-        save.get_style_context().add_class("suggested-action")
+        self.save_button = self.add_button("Save", Gtk.ResponseType.OK)
+        self.save_button.get_style_context().add_class("suggested-action")
 
         self.result = copy.deepcopy(cfg)
         self.current = None                     # id of the connection being edited
@@ -130,10 +131,22 @@ class SettingsDialog(Gtk.Dialog):
         left.pack_start(buttons, False, False, 0)
         page.pack_start(left, False, False, 0)
 
-        right = Gtk.ScrolledWindow()
-        right.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.form = FormGrid()
-        right.add(self.form)
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.form = Gtk.Stack()
+        self.form.set_transition_type(Gtk.StackTransitionType.NONE)
+        self.basic_form = FormGrid()
+        self.advanced_form = FormGrid()
+        for name, title, form in (("basic", "Basic", self.basic_form),
+                                  ("advanced", "Advanced", self.advanced_form)):
+            scroller = Gtk.ScrolledWindow()
+            scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+            scroller.add(form)
+            self.form.add_titled(scroller, name, title)
+        switcher = Gtk.StackSwitcher()
+        switcher.set_stack(self.form)
+        switcher.set_halign(Gtk.Align.START)
+        right.pack_start(switcher, False, False, 0)
+        right.pack_start(self.form, True, True, 0)
         page.pack_start(right, True, True, 0)
 
         self._build_form()
@@ -141,40 +154,52 @@ class SettingsDialog(Gtk.Dialog):
         return page
 
     def _build_form(self):
-        form = self.form
+        basic = self.basic_form
+        advanced = self.advanced_form
         self.f = {}
-        self.f["name"] = form.add_row("Display name", Gtk.Entry())
-        self.f["protocol"] = form.add_row(
+        basic.add_heading("Workspace")
+        self.f["name"] = basic.add_row("Display name", Gtk.Entry())
+        self.f["description"] = basic.add_row("Description", Gtk.Entry())
+        self.f["description"].set_placeholder_text("e.g. Primary workspace")
+        self.f["group"] = basic.add_row("Group", Gtk.Entry())
+        self.f["group"].set_placeholder_text("e.g. Desktops or Applications")
+        self.f["protocol"] = basic.add_row(
             "Protocol", combo([("rdp", "RDP - Windows Remote Desktop"),
                                ("vnc", "VNC - TigerVNC viewer")], "rdp"))
         self.f["protocol"].connect("changed", self._on_protocol_changed)
-        self.f["host"] = form.add_row("Server address", Gtk.Entry())
+        self.f["host"] = basic.add_row("Server address", Gtk.Entry())
         self.f["host"].set_placeholder_text("hostname or IP of the Windows server")
-        self.f["port"] = form.add_row("Port", Gtk.SpinButton.new_with_range(1, 65535, 1))
-        self.f["username"] = form.add_row("Username", Gtk.Entry())
-        self.f["domain"] = form.add_row("Domain", Gtk.Entry())
-        self.f["password"] = form.add_row("Password", Gtk.Entry(visibility=False))
+        self.f["port"] = basic.add_row("Port", Gtk.SpinButton.new_with_range(1, 65535, 1))
+        basic.add_heading("Sign in")
+        self.f["username"] = basic.add_row("Username", Gtk.Entry())
+        self.f["domain"] = basic.add_row("Domain", Gtk.Entry())
+        self.f["password"] = basic.add_row("Password", Gtk.Entry(visibility=False))
         self.f["password"].set_placeholder_text("leave empty to ask the user")
-        self.f["prompt_credentials"] = form.add_wide(
+        self.f["prompt_credentials"] = basic.add_wide(
             Gtk.CheckButton(label="Ask for credentials at connection time"))
 
-        form.add_heading("Display")
-        self.f["display"] = form.add_row("Mode", combo(DISPLAY_MODES, "fullscreen"))
-        self.f["display_custom"] = form.add_row("Custom size", Gtk.Entry())
+        basic.add_heading("Display")
+        self.f["display"] = basic.add_row("Mode", combo(DISPLAY_MODES, "fullscreen"))
+        self.f["display_custom"] = basic.add_row("Custom size", Gtk.Entry())
         self.f["display_custom"].set_placeholder_text("1920x1080")
         self.f["display"].connect("changed", self._on_display_changed)
-        self.f["gfx"] = form.add_row("Graphics codec", combo(GFX_MODES, "auto"))
-        self.f["network"] = form.add_row("Link speed", combo(NET_MODES, "auto"))
+        self.validation = Gtk.Label(xalign=0)
+        self.validation.set_line_wrap(True)
+        basic.add_wide(self.validation)
 
-        form.add_heading("Security")
-        self.f["security"] = form.add_row("Protocol", combo(SEC_MODES, "auto"))
-        self.f["cert_policy"] = form.add_row("Certificates", combo(CERT_MODES, "ignore"))
-        self.f["gateway"] = form.add_row("RD Gateway", Gtk.Entry())
+        advanced.add_heading("Performance")
+        self.f["gfx"] = advanced.add_row("Graphics codec", combo(GFX_MODES, "auto"))
+        self.f["network"] = advanced.add_row("Link speed", combo(NET_MODES, "auto"))
+
+        advanced.add_heading("Security")
+        self.f["security"] = advanced.add_row("Protocol", combo(SEC_MODES, "auto"))
+        self.f["cert_policy"] = advanced.add_row("Certificates", combo(CERT_MODES, "ignore"))
+        self.f["gateway"] = advanced.add_row("RD Gateway", Gtk.Entry())
         self.f["gateway"].set_placeholder_text("optional: gateway.example.com")
-        self.f["gateway_username"] = form.add_row("Gateway user", Gtk.Entry())
-        self.f["gateway_domain"] = form.add_row("Gateway domain", Gtk.Entry())
+        self.f["gateway_username"] = advanced.add_row("Gateway user", Gtk.Entry())
+        self.f["gateway_domain"] = advanced.add_row("Gateway domain", Gtk.Entry())
 
-        form.add_heading("Redirection")
+        advanced.add_heading("Redirection")
         for key, text in (("audio_out", "Play remote sound on this client"),
                           ("audio_in", "Redirect the microphone"),
                           ("redirect_clipboard", "Share the clipboard"),
@@ -182,20 +207,50 @@ class SettingsDialog(Gtk.Dialog):
                           ("redirect_usb_devices", "Redirect raw USB devices"),
                           ("redirect_smartcard", "Redirect smart card readers"),
                           ("redirect_printers", "Redirect local printers")):
-            self.f[key] = form.add_wide(Gtk.CheckButton(label=text))
+            self.f[key] = advanced.add_wide(Gtk.CheckButton(label=text))
 
-        form.add_heading("Session")
-        self.f["app"] = form.add_row("RemoteApp", Gtk.Entry())
+        advanced.add_heading("Session")
+        self.f["app"] = advanced.add_row("RemoteApp", Gtk.Entry())
         self.f["app"].set_placeholder_text("optional: ||AppAlias or a program path")
-        self.f["auto_reconnect"] = form.add_wide(
+        self.f["auto_reconnect"] = advanced.add_wide(
             Gtk.CheckButton(label="Reconnect automatically if the session drops"))
-        self.f["reconnect_delay"] = form.add_row(
+        self.f["reconnect_delay"] = advanced.add_row(
             "Reconnect delay (s)", Gtk.SpinButton.new_with_range(2, 120, 1))
-        self.f["extra_args"] = form.add_row("Extra FreeRDP arguments", Gtk.Entry())
+        self.f["extra_args"] = advanced.add_row("Extra FreeRDP arguments", Gtk.Entry())
         self.f["extra_args"].set_placeholder_text("/scale:140 -themes")
+
+        for key in ("name", "host", "gateway"):
+            self.f[key].connect("changed", self._validate_form)
+        for key in ("port", "protocol"):
+            self.f[key].connect("changed", self._validate_form)
 
     def _on_display_changed(self, widget):
         self.f["display_custom"].set_sensitive(widget.get_active_id() == "custom")
+
+    def _validate_form(self, *_):
+        if not self.current:
+            self.validation.set_text("")
+            self.save_button.set_sensitive(True)
+            return True
+        name = self.f["name"].get_text().strip()
+        if not name:
+            message = "Display name is required."
+        else:
+            candidate = {
+                "name": name,
+                "host": self.f["host"].get_text().strip(),
+                "port": int(self.f["port"].get_value()),
+                "protocol": self.f["protocol"].get_active_id() or "rdp",
+                "gateway": self.f["gateway"].get_text().strip(),
+            }
+            try:
+                networkdiag.normalize_target(candidate)
+                message = ""
+            except ValueError as exc:
+                message = "Fix before saving: %s." % str(exc)
+        self.validation.set_text(message or "Ready to save.")
+        self.save_button.set_sensitive(not message)
+        return not message
 
     # VNC carries no device redirection, no audio and no domain login. Leaving
     # those controls active would imply settings that silently do nothing.
@@ -254,6 +309,8 @@ class SettingsDialog(Gtk.Dialog):
         if not conn:
             return
         self.f["name"].set_text(conn.get("name", ""))
+        self.f["description"].set_text(conn.get("description", ""))
+        self.f["group"].set_text(conn.get("group", "Connections"))
         self.f["host"].set_text(conn.get("host", ""))
         self.f["port"].set_value(int(conn.get("port", 3389)))
         self.f["username"].set_text(conn.get("username", ""))
@@ -287,6 +344,7 @@ class SettingsDialog(Gtk.Dialog):
                     "redirect_usb_storage", "redirect_usb_devices",
                     "redirect_smartcard", "redirect_printers", "auto_reconnect"):
             self.f[key].set_active(bool(conn.get(key)))
+        self._validate_form()
 
     def _store_form(self):
         if not self.current:
@@ -295,6 +353,8 @@ class SettingsDialog(Gtk.Dialog):
         if not conn:
             return
         conn["name"] = self.f["name"].get_text().strip() or conn["id"]
+        conn["description"] = self.f["description"].get_text().strip()
+        conn["group"] = self.f["group"].get_text().strip() or "Connections"
         conn["host"] = self.f["host"].get_text().strip()
         conn["port"] = int(self.f["port"].get_value())
         conn["username"] = self.f["username"].get_text().strip()
@@ -394,7 +454,7 @@ class SettingsDialog(Gtk.Dialog):
             Gtk.CheckButton(label="Allow switching to a text console (Ctrl+Alt+F1)"))
         self.d["allow_console"].set_active(bool(device.get("allow_console", False)))
         self.d["allow_terminal"] = grid.add_wide(
-            Gtk.CheckButton(label="Show the Terminal button (administrator password applies)"))
+            Gtk.CheckButton(label="Allow Terminal in administrator tools"))
         self.d["allow_terminal"].set_active(bool(device.get("allow_terminal", True)))
         self.d["show_ip"] = grid.add_wide(
             Gtk.CheckButton(label="Show the IP address on screen"))
@@ -506,17 +566,22 @@ class SettingsDialog(Gtk.Dialog):
     # ------------------------------------------------------------ response --
     def _on_response(self, _dialog, response):
         if response == Gtk.ResponseType.OK:
+            if not self._validate_form():
+                self.stop_emission_by_name("response")
+                return
             self._store_form()
             self._store_device()
 
 
 # ----------------------------------------------------------------- network ---
 class NetworkDialog(Gtk.Dialog):
-    def __init__(self, parent, connections=None):
-        super().__init__(title="Network", transient_for=parent, modal=True)
+    def __init__(self, parent, connections=None, test_only=False):
+        super().__init__(title="Network test" if test_only else "Network",
+                         transient_for=parent, modal=True)
         self.set_default_size(700, 520)
         self.add_button("Close", Gtk.ResponseType.CLOSE)
         self.connections = list(connections or [])
+        self.test_only = bool(test_only)
         self._test_generation = 0
         self._test_destroyed = False
         self.connect("destroy", self._on_test_destroyed)
@@ -529,8 +594,9 @@ class NetworkDialog(Gtk.Dialog):
         box.pack_start(self.status, False, False, 0)
 
         notebook = Gtk.Notebook()
-        notebook.append_page(self._wired_page(), Gtk.Label(label="Wired"))
-        notebook.append_page(self._wifi_page(), Gtk.Label(label="Wi-Fi"))
+        if not self.test_only:
+            notebook.append_page(self._wired_page(), Gtk.Label(label="Wired"))
+            notebook.append_page(self._wifi_page(), Gtk.Label(label="Wi-Fi"))
         notebook.append_page(self._test_page(), Gtk.Label(label="Test"))
         box.pack_start(notebook, True, True, 0)
 
@@ -572,7 +638,7 @@ class NetworkDialog(Gtk.Dialog):
         self.test_run.get_style_context().add_class("suggested-action")
         self.test_run.connect("clicked", self._run_network_test)
         self.test_run.set_sensitive(bool(self.connections))
-        self.test_copy = Gtk.Button(label="Copy Report")
+        self.test_copy = Gtk.Button(label="Copy detailed report")
         self.test_copy.set_sensitive(False)
         self.test_copy.connect("clicked", self._copy_network_report)
         controls = Gtk.Box(spacing=8)
@@ -581,7 +647,19 @@ class NetworkDialog(Gtk.Dialog):
         controls.pack_end(self.test_copy, False, False, 0)
         box.pack_start(controls, False, False, 0)
 
+        self.test_summary = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        initial = Gtk.Label(
+            label=("Choose a configured connection, then run the test."
+                   if self.connections else
+                   "No configured connections are available to test."),
+            xalign=0,
+        )
+        initial.set_line_wrap(True)
+        self.test_summary.pack_start(initial, False, False, 4)
+        box.pack_start(self.test_summary, False, False, 0)
+
         scroller = Gtk.ScrolledWindow()
+        scroller.set_min_content_height(150)
         self.test_report = Gtk.TextView(editable=False, monospace=True,
                                         cursor_visible=False)
         self.test_report.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
@@ -591,7 +669,9 @@ class NetworkDialog(Gtk.Dialog):
              "No configured connections are available to test.")
         )
         scroller.add(self.test_report)
-        box.pack_start(scroller, True, True, 0)
+        self.test_details = Gtk.Expander(label="Technical details")
+        self.test_details.add(scroller)
+        box.pack_start(self.test_details, True, True, 0)
         return box
 
     def _selected_test_target(self):
@@ -628,10 +708,38 @@ class NetworkDialog(Gtk.Dialog):
         if self._test_destroyed or generation != self._test_generation:
             return False
         self.test_report.get_buffer().set_text(report)
+        if hasattr(self, "_render_network_summary"):
+            self._render_network_summary(report)
         self.test_spinner.stop()
         self.test_run.set_sensitive(True)
         self.test_copy.set_sensitive(True)
         return False
+
+    def _render_network_summary(self, report):
+        for child in self.test_summary.get_children():
+            self.test_summary.remove(child)
+        rows = uxstate.parse_network_report(report)
+        if not rows:
+            label = Gtk.Label(label="The diagnostic report could not be summarized.",
+                              xalign=0)
+            self.test_summary.pack_start(label, False, False, 0)
+        for item in rows:
+            state = item["state"]
+            marker = {"ok": "✓ PASS", "failed": "✕ FAILED",
+                      "skipped": "• SKIPPED", "info": "• INFO"}.get(state, "• INFO")
+            row = Gtk.Box(spacing=10)
+            status = Gtk.Label(label=marker, xalign=0)
+            status.set_width_chars(10)
+            name = Gtk.Label(xalign=0)
+            name.set_markup("<b>%s</b>" % GLib.markup_escape_text(item["label"]))
+            detail = Gtk.Label(label=item.get("detail") or "", xalign=0)
+            detail.set_ellipsize(3)
+            detail.set_tooltip_text(item.get("detail") or "")
+            row.pack_start(status, False, False, 0)
+            row.pack_start(name, False, False, 0)
+            row.pack_start(detail, True, True, 0)
+            self.test_summary.pack_start(row, False, False, 0)
+        self.test_summary.show_all()
 
     def _copy_network_report(self, *_):
         buffer_ = self.test_report.get_buffer()

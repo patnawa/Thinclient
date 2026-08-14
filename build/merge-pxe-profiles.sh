@@ -85,29 +85,32 @@ set default=0
 set fallback=3
 set timeout=5
 set timeout_style=menu
-menuentry "Lite Auto Cache - best for group boot (recommended)" {
-    linux /thinclient/lite/vmlinuz $KERNEL_CMDLINE $LITE_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
-    initrd /thinclient/lite/initrd.img
-}
-menuentry "Lite Network Only - bypass a slow cache USB" {
-    linux /thinclient/lite/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
-    initrd /thinclient/lite/initrd.img
-}
-menuentry "Full Drivers Auto Cache - Wi-Fi and uncommon hardware" {
-    linux /thinclient/full/vmlinuz $KERNEL_CMDLINE $FULL_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/full/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
-    initrd /thinclient/full/initrd.img
-}
-menuentry "Lite Auto Cache - HTTP kernel fallback" {
+# UEFI firmware only uses TFTP for the small GRUB loader.  Kernel and initrd
+# use HTTP by default because firmware TFTP is painfully slow on older PCs.
+# If HTTP is unavailable GRUB falls back to entry 3, the equivalent TFTP boot.
+menuentry "Lite Auto Cache - HTTP fast path (recommended)" {
     linux (http,{{HTTP}})/thinclient/lite/vmlinuz $KERNEL_CMDLINE $LITE_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd (http,{{HTTP}})/thinclient/lite/initrd.img
 }
-menuentry "Lite Network Only - HTTP kernel fallback" {
+menuentry "Lite Network Only - HTTP fast path" {
     linux (http,{{HTTP}})/thinclient/lite/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd (http,{{HTTP}})/thinclient/lite/initrd.img
 }
-menuentry "Full Drivers Auto Cache - HTTP kernel fallback" {
+menuentry "Full Drivers Auto Cache - HTTP fast path" {
     linux (http,{{HTTP}})/thinclient/full/vmlinuz $KERNEL_CMDLINE $FULL_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/full/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
     initrd (http,{{HTTP}})/thinclient/full/initrd.img
+}
+menuentry "Lite Auto Cache - TFTP recovery" {
+    linux /thinclient/lite/vmlinuz $KERNEL_CMDLINE $LITE_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+    initrd /thinclient/lite/initrd.img
+}
+menuentry "Lite Network Only - TFTP recovery" {
+    linux /thinclient/lite/vmlinuz $KERNEL_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/lite/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+    initrd /thinclient/lite/initrd.img
+}
+menuentry "Full Drivers Auto Cache - TFTP recovery" {
+    linux /thinclient/full/vmlinuz $KERNEL_CMDLINE $FULL_CACHE ip=dhcp fetch=http://{{HTTP}}/thinclient/full/filesystem.squashfs tc.config=http://{{HTTP}}/config.json
+    initrd /thinclient/full/initrd.img
 }
 EOF
 

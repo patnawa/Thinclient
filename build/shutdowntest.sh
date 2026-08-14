@@ -1,7 +1,7 @@
 #!/bin/bash
 # Prove the Shut Down button actually powers the machine off.
 #
-# Boots the ISO in QEMU, tabs to the Shut Down button, confirms, and checks that
+# Boots the ISO in QEMU, opens Power, chooses Shut down, and checks that
 # the virtual machine really powered off. This is the end-to-end test for the
 # whole privileged path: GTK handler -> sudo -> systemctl poweroff.
 #
@@ -11,7 +11,7 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
-TABS="${1:-7}"
+TABS="${1:-4}"
 OUT="$REPO/out/shutdowntest"
 MON=/tmp/tc-shutdown-monitor.sock
 
@@ -46,22 +46,42 @@ for _ in $(seq 1 30); do [ -S "$MON" ] && break; sleep 1; done
 mon() { python3 /tmp/tc-mon2.py "$MON" "$@" >/dev/null 2>&1; }
 
 echo "waiting for the connection manager..."
-sleep 40
-mon "screendump $OUT/1-manager.ppm"
+# Full-driver images and old CPUs can spend well over 40 seconds unpacking the
+# live root. Sending keys to a black boot screen makes the test fail for the
+# wrong reason, so wait for a materially rendered GUI (with a hard deadline).
+LAST=0
+READY=0
+for ELAPSED in 60 75 90 105 120; do
+    sleep $((ELAPSED - LAST)); LAST=$ELAPSED
+    kill -0 "$QEMU" 2>/dev/null || break
+    mon "screendump $OUT/1-manager.ppm"
+    BRIGHTNESS=$(convert "$OUT/1-manager.ppm" -format '%[fx:int(mean*255)]' info: 2>/dev/null || echo 0)
+    echo "  t=${ELAPSED}s  brightness $BRIGHTNESS"
+    if [ "${BRIGHTNESS:-0}" -ge 20 ]; then
+        READY=1
+        break
+    fi
+done
+if [ "$READY" -ne 1 ]; then
+    [ -f "$OUT/1-manager.ppm" ] && convert "$OUT/1-manager.ppm" "$OUT/1-manager.png" 2>/dev/null
+    kill -9 "$QEMU" 2>/dev/null
+    echo "RESULT: the connection manager did not become ready before the deadline"
+    exit 1
+fi
 
-echo "tabbing to Shut Down ($TABS presses)"
+echo "tabbing to Power ($TABS presses)"
 KEYS=(); for _ in $(seq 1 "$TABS"); do KEYS+=("sendkey tab"); done
 mon "${KEYS[@]}"
 sleep 1
 mon "screendump $OUT/2-focused.ppm"
 
-echo "activating the button"
+echo "opening Power options"
 mon "sendkey ret"
 sleep 2
-mon "screendump $OUT/3-confirm.ppm"
+mon "screendump $OUT/3-power-options.ppm"
 
-echo "confirming"
-mon "sendkey ret"
+echo "choosing Shut down"
+mon "sendkey tab" "sendkey tab" "sendkey ret"
 
 echo "waiting for power off..."
 for i in $(seq 1 40); do

@@ -93,6 +93,7 @@ mkdir -p /etc/thinclient
 cat > /etc/thinclient/build-info <<EOF
 name=$DISTRO_NAME
 version=$DISTRO_VERSION
+profile=$CACHE_PROFILE
 base=Debian $SUITE
 built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 freerdp=$FREERDP_VER

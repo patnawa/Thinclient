@@ -63,11 +63,11 @@ if [ "$MODE" = "--tftp-first" ] && [ -f "$PXE/grub/grub.cfg" ]; then
     # initrd over TFTP gives Linux a clean NIC reset; the much larger squashfs
     # still uses HTTP. Keep the HTTP entry as the automatic fallback.
     if grep -q '/thinclient/lite/' "$PXE/grub/grub.cfg"; then
-        # Dual-profile trees list three TFTP choices first; entry 3 is Lite
-        # Auto Cache's HTTP-kernel fallback.
+        # Dual-profile trees list the three HTTP choices first. Entry 3 is the
+        # equivalent Lite Auto Cache TFTP recovery path.
         sed -i -E \
-            -e 's/^set default=.*/set default=0/' \
-            -e 's/^set fallback=.*/set fallback=3/' \
+            -e 's/^set default=.*/set default=3/' \
+            -e 's/^set fallback=.*/set fallback=0/' \
             -e 's/^set timeout=.*/set timeout=5/' \
             "$PXE/grub/grub.cfg"
     else

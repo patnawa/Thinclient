@@ -44,9 +44,9 @@ power on ──▶ BIOS / UEFI / Secure Boot ──▶ connection manager ──
 
 | Capability | What you get |
 |---|---|
-| Appliance experience | Full-screen GTK connection picker with optional kiosk auto-connect; no desktop shell or application menu. |
-| Local identity | Versioned About view with static CPU, memory, graphics, network-adapter/driver details, and the GitHub project URL. |
-| Guided network test | Copyable, credential-free route, DNS, TCP, RDP, and VNC preflight from the Network window. |
+| Appliance experience | Full-screen GTK workspace cards, grouping, visible state, and cancellable kiosk auto-connect; no desktop shell or application menu. |
+| Local identity | Public Help view with version, image profile, IP, cache state, last error, static hardware, copyable report, and offline QR support code. |
+| Guided network test | Visual and copyable, credential-free route, DNS, TCP, RDP, and VNC preflight from Help or the administrator Network window. |
 | Windows-ready sessions | FreeRDP 3, RemoteApp, RD Gateway, NLA/TLS, Kerberos preparation, multi-monitor, dynamic resolution, and reconnect policy. |
 | Device redirection | Audio output, microphone, clipboard, printers, smart cards, USB storage, and optional raw USB redirection. |
 | Flexible deployment | One hybrid image for legacy BIOS, UEFI, and Secure Boot; install locally or boot a diskless fleet over PXE. |
@@ -91,7 +91,7 @@ prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 | RDP client | FreeRDP 3 (`xfreerdp3`) |
 | VNC client | TigerVNC (`xtigervncviewer`), optional via `INCLUDE_VNC` |
 | Graphics | X11 + Openbox, no desktop environment |
-| UI | GTK3 connection manager with a versioned About view, static local hardware details, and GitHub link (`overlay/usr/local/lib/thinclient/`) |
+| UI | GTK3 connection manager with friendly grouped cards, staged connection progress, actionable errors, public Help, and administrator-gated tools (`overlay/usr/local/lib/thinclient/`) |
 | Audio | PipeWire, playback **and** microphone redirection |
 | Redirection | Multi-monitor, USB storage, smart cards, printers, clipboard |
 | Network | NetworkManager, static/DHCP, broad wired/USB Ethernet drivers, and Intel/Realtek/Qualcomm/Broadcom/MediaTek Wi-Fi firmware |
@@ -106,21 +106,21 @@ so there is no way out of the appliance.
 
 ![ThinClient connection settings](docs/images/settings.png)
 
-Connections, display, redirection, certificate, device, and diagnostic options
-are editable from the administrator-gated interface.
+The administrator-gated editor keeps names, endpoints, credentials, and display
+mode on a Basic page. Security, graphics, redirection, RemoteApp, and reconnect
+policy remain available on Advanced.
 
 </details>
 
 <details>
-<summary><strong>About and hardware</strong></summary>
+<summary><strong>Help and device information</strong></summary>
 
-![ThinClient About dialog showing version and hardware](docs/images/about.png)
+![ThinClient Help dialog showing support information and QR code](docs/images/about.png)
 
-The versioned About view shows static local CPU, memory, graphics, and network
-adapter/driver details, plus the GitHub project URL. Hardware is read only when
-About opens and is cached—there is no background polling. The image has no
-browser, so the URL remains visible and is clickable only where a URI handler
-is available.
+The public Help view shows the version, Lite/Full image profile, IP, USB-cache
+state, and last connection error. It can copy a credential-free report, run a
+safe network test, and display a compact offline QR support code. Full static
+hardware details remain behind the Technical details expander.
 
 </details>
 
@@ -153,7 +153,7 @@ Then, inside it as root:
 ```bash
 apt update
 apt install -y --no-install-recommends \
-    debootstrap squashfs-tools xorriso isolinux syslinux-common \
+    debootstrap squashfs-tools xorriso isolinux pxelinux syslinux-common \
     grub-pc-bin grub-efi-amd64-bin grub-common mtools dosfstools \
     ca-certificates rsync file curl python3
 ```
@@ -287,7 +287,7 @@ Or individually:
 | `sudo bash build/permcheck.sh` | **Runs as the kiosk user**: sudo rules, `/run` writability, save/delete round-trip |
 | `sudo bash build/rdpcheck.sh` | Every FreeRDP option we emit exists in the shipped binary |
 | `sudo bash build/rdpsession-test.sh` | A real RDP session, client taken from the image |
-| `sudo bash build/uitest.sh out/ui.png [settings\|about\|network-test]` | The GTK screens render |
+| `sudo bash build/uitest.sh out/ui.png [settings\|about\|network-test\|admin\|progress\|error]` | The GTK screens render; set `TC_UI_SCREEN=1024x768` for the old-monitor lane |
 | `sudo bash build/boottest.sh bios\|uefi\|secureboot\|debug` | Boots in QEMU, timed screenshots |
 | `sudo bash build/shutdowntest.sh` | Drives the Shut Down button and checks the machine really powers off |
 | `sudo bash build/installtest.sh bios\|uefi` | Installs to a blank virtual disk, removes the ISO, and boots the installed system |
@@ -500,9 +500,11 @@ partitioning, the copy and the bootloader all worked.
 
 ## Deploying by PXE
 
-Two moving parts: **TFTP** hands the client a bootloader, kernel, and initrd;
-**HTTP** hands it the much larger root filesystem. HTTP is used for the big
-transfer because TFTP is slow at that size, and because once
+Two moving parts: **TFTP** hands the client its firmware-compatible bootloader;
+legacy BIOS also receives the kernel and initrd that way. **HTTP** gives UEFI
+clients the kernel and initrd by default and hands every client the much larger
+root filesystem. HTTP is used for large transfers because TFTP is slow at that
+size, and because once
 `filesystem.squashfs` is in RAM the client no longer needs the server at all.
 
 ### Full and Lite PXE profiles
@@ -642,10 +644,10 @@ WDS's TFTP, Tftpd64, or a Linux host for the file serving.
 
 Both BIOS and UEFI paths are verified end to end by `build/pxetest.sh`. The UEFI
 netboot image is built with the `http` module preloaded, so GRUB pulls the
-kernel and initrd over HTTP rather than TFTP—materially faster for a roughly 56 MiB
-initrd — and the menu carries `set fallback=1`, so if HTTP is unavailable the
-client drops to the TFTP entry by itself instead of sitting at a menu that
-nobody is standing in front of.
+kernel and initrd over HTTP rather than TFTP—materially faster for a roughly
+30–56 MiB initrd. Single-profile and merged menus both fall back to their
+equivalent TFTP entry if HTTP is unavailable instead of leaving the client at
+an unattended menu.
 
 Some UEFI NICs can TFTP after a warm reboot but time out on GRUB's first HTTP
 connection. The Debian Docker deployment automatically renders the menu with
@@ -731,6 +733,8 @@ client needs no local configuration at all.
     {
       "id": "main",
       "name": "Windows Server 2025",
+      "description": "Primary workspace", // friendly card text; endpoint stays hidden
+      "group": "Desktops",           // e.g. Desktops, Applications, Support
       "protocol": "rdp",              // rdp | vnc
       "host": "192.168.1.10",
       "port": 3389,                   // VNC defaults to 5900
@@ -762,9 +766,9 @@ client needs no local configuration at all.
 
 ### Kiosk mode
 
-Set `device.auto_connect` to a connection `id`. The client then boots straight
-into that session and returns to it automatically if it drops — the connection
-list only appears if the user cancels out. Combine with
+Set `device.auto_connect` to a connection `id`. After boot, a visible five-second
+countdown offers **Connect now** and **Cancel** before starting the session. The
+same retry policy can return to it after a network drop. Combine this with
 `allow_settings: false` and an `admin_password` for a locked-down unit.
 
 ---
@@ -896,12 +900,12 @@ credential dialog is skipped.
 Inside an RDP session, FreeRDP's own hotkeys apply: **Ctrl+Alt+Enter** toggles
 full screen, and Ctrl+Alt+Break releases the keyboard grab.
 
-Settings → **Diagnostics** shows the last session's FreeRDP log, the boot
+**Admin → Settings → Diagnostics** shows the last session's FreeRDP log, the boot
 journal, and current network state. That page answers most support calls without
 anyone needing a shell.
 
-For a quick guided check, open **Network → Test**, choose a configured
-connection, and select **Run Network Test**. It checks the local address,
+For a quick guided check, open **Help → Run network test**. Administrators can
+also use **Admin → Network → Test**. It checks the local address,
 route, DNS, target TCP port, and a credential-free RDP/VNC handshake on demand.
 The default-gateway ping is informational rather than a pass/fail gate. The
 copyable support report never includes usernames or passwords.
@@ -912,7 +916,7 @@ Three ways, in order of convenience:
 
 | Route | How |
 |---|---|
-| **Terminal button** | Next to Network on the toolbar. Opens a terminal in the session. Behind the administrator password, and hidden entirely when `allow_terminal` is false. |
+| **Admin → Terminal** | Opens a local support terminal after administrator authentication; hidden entirely when `allow_terminal` is false. |
 | Text console | Set `allow_console: true`, then Ctrl+Alt+F1. Log in as `thin` — it has no password. |
 | Diagnostic boot entry | Boot **Start with diagnostic console**. Lifts the console lockdown for that boot only and prints boot timings to the console and serial port. |
 
@@ -923,7 +927,7 @@ be logged into. `journalctl`, `ip`, `ping` and the FreeRDP logs are all readable
 without privilege.
 
 By default the console is locked down (`DontVTSwitch`), so Ctrl+Alt+F1 does
-nothing until you enable it. The Terminal button is the intended route.
+nothing until you enable it. **Admin → Terminal** is the intended local route.
 
 ### Remote support over SSH
 
@@ -995,11 +999,11 @@ that would only walk a domain account towards a lockout).
 | PXE client stops at "Booting..." | Almost always the HTTP URL. Fetch `filesystem.squashfs` from another machine to confirm the web server is serving it. |
 | PXE UEFI client says "Access denied" or reboots | Secure Boot is on but you handed it the unsigned loader. Use `bootx64.efi`, or turn Secure Boot off. |
 | Settings do not survive reboot | The medium is optical/Ventoy/read-only, or this custom image has no `TCCONF`. Raw-write the standard ISO; its partition 3 is writable persistence. |
-| Wi-Fi adapter is missing | Open About and check **Network**. `no driver bound` means no kernel module attached; inspect `dmesg` for firmware failures, run `build/networkcheck.sh`, and identify PCI/USB hardware with `lspci -nnk` and `lsusb`. |
-| SSH connection is refused | This is the safe default. Put a valid public key at `TCCONF/support/authorized_keys` and reboot; confirm the About/header IP, then use the `support` user. |
-| A button appears to do nothing | Look at the status line at the bottom — every failure is reported there now. If it is silent, `boottest.sh debug` and read `serial.log`. |
+| Wi-Fi adapter is missing | Open **Help → Technical details** and check **Network**. `no driver bound` means no kernel module attached; inspect `dmesg` for firmware failures, run `build/networkcheck.sh`, and identify PCI/USB hardware with `lspci -nnk` and `lsusb`. |
+| SSH connection is refused | This is the safe default. Put a valid public key at `TCCONF/support/authorized_keys` and reboot; confirm the Help/header IP, then use the `support` user. |
+| A connection fails | Use **Try again**, **Run network test**, or **Choose another** in the error window. Copy the Help report if support needs the device state. |
 | Restart / Shut Down do nothing | Was a real defect (no `sudo` in the image) fixed in this build. `sudo bash build/permcheck.sh` verifies it. |
-| Keyboard cannot reach the buttons | Tab moves through Connect → Settings → Network → Terminal → About → Restart → Shut Down; Enter activates whatever has focus, and only connects when the list has focus. |
+| Keyboard cannot reach the buttons | Tab moves through the workspace cards and Connect → Help → Admin → Power. Enter activates the focused item; F1 opens Help and F2 opens Admin. |
 | Video is sluggish in the session | Check `active driver` in the debug serial log. It should say `modeset`; `vesa` or `fbdev` means KMS did not come up, so try the safe-graphics entry or check the GPU is supported. |
 
 For a shell on a client, boot the **Diagnostic console** entry, or set
