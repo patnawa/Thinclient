@@ -1,0 +1,55 @@
+name: Publish PXE server container
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Container tag without the leading v
+        required: true
+        default: "1.3"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-pxe-container-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Build and publish version and latest tags
+        shell: bash
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${REQUESTED_VERSION#v}"
+          case "$version" in
+            ''|*[!A-Za-z0-9._-]*)
+              echo "invalid container version: $version" >&2
+              exit 1
+              ;;
+          esac
+
+          image="$(printf '%s/%s' ghcr.io "$GITHUB_REPOSITORY_OWNER/thinclient-pxe-server" | tr '[:upper:]' '[:lower:]')"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker build --pull \
+            --file deploy/docker-pxe/Dockerfile \
+            --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.version=$version" \
+            --tag "$image:$version" \
+            --tag "$image:latest" \
+            .
+          docker push "$image:$version"
+          docker push "$image:latest"
+

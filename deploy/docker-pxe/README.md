@@ -52,12 +52,46 @@ server image. Ensure the copied artifacts are readable:
 sudo chmod -R a+rX /srv/thinclient/pxe
 ```
 
+## Build or pull the container
+
+The server container contains TFTP and HTTP software only. The large PXE tree
+is kept outside the image and mounted read-only, so rebuilding the container
+does not duplicate the Lite and Full root files.
+
+To build the image directly from a repository checkout:
+
+```bash
+cd Thinclient
+sudo docker build \
+  --file deploy/docker-pxe/Dockerfile \
+  --tag thinclient-pxe-server:1.3 .
+```
+
+The normal `deploy.sh` command performs this local build automatically. A
+published image is also available from GitHub Container Registry:
+
+```bash
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.3
+```
+
+Publishing is automated by `.github/workflows/publish-container.yml` whenever
+a GitHub release is published. It also supports a manual workflow run and
+publishes both the numbered version and `latest` tags.
+
 ## Deploy
 
 From the repository root on Debian, supply the Debian host's LAN address:
 
 ```bash
 sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
+```
+
+To deploy the published image instead of compiling it on the Debian host:
+
+```bash
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.3 \
+  bash deploy/docker-pxe/deploy.sh \
+  192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
 
 The helper performs four operations:
@@ -135,6 +169,15 @@ best-case transfer floor of roughly 2.4 minutes during a simultaneous boot.
 After replacing the PXE tree with a new release, rerun `deploy.sh`. It retargets
 the new boot menus and recreates containers only when their configuration or
 image changed.
+
+For rollback, point the same command at the retained previous PXE directory
+and, when using GHCR, its previous image tag:
+
+```bash
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.3 \
+  bash deploy/docker-pxe/deploy.sh \
+  192.168.1.20 8080 /srv/thinclient/pxe-dual-previous
+```
 
 To stop the service without deleting the PXE artifacts:
 

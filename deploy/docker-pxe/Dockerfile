@@ -1,5 +1,9 @@
 FROM debian:trixie-slim
 
+LABEL org.opencontainers.image.title="ThinClient PXE server" \
+      org.opencontainers.image.description="TFTP and HTTP services for ThinClient diskless PXE boot" \
+      org.opencontainers.image.source="https://github.com/patnawa/Thinclient"
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1

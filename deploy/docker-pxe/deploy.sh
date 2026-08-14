@@ -23,6 +23,12 @@ REPO=$(CDPATH= cd -- "$HERE/../.." && pwd)
 HTTP_HOST=$1
 HTTP_PORT=${2:-8080}
 PXE_ROOT=${3:-"$REPO/out/pxe"}
+USE_PREBUILT=0
+if [ -n "${PXE_IMAGE:-}" ]; then
+    USE_PREBUILT=1
+else
+    PXE_IMAGE=thinclient-pxe-server:1.3
+fi
 
 case "$HTTP_HOST" in
     *[!A-Za-z0-9._-]* | "")
@@ -35,6 +41,11 @@ case "$HTTP_PORT" in
         ;;
 esac
 [ "$HTTP_PORT" -ge 1 ] && [ "$HTTP_PORT" -le 65535 ] || die "HTTP port must be between 1 and 65535"
+case "$PXE_IMAGE" in
+    *[!A-Za-z0-9._/@:-]* | "")
+        die "PXE_IMAGE contains unsupported characters"
+        ;;
+esac
 
 command -v docker >/dev/null 2>&1 || die "Docker is not installed"
 docker compose version >/dev/null 2>&1 || die "the Docker Compose plugin is not installed"
@@ -61,16 +72,31 @@ if find "$PXE_ROOT" -type f ! -perm -004 -print -quit | grep -q .; then
     die "some PXE files are not world-readable; run: chmod -R a+rX '$PXE_ROOT'"
 fi
 
-printf 'PXE_ROOT=%s\nPXE_LISTEN=%s\nHTTP_PORT=%s\n' \
-    "$PXE_ROOT" "$HTTP_HOST" "$HTTP_PORT" > "$HERE/.env"
+printf 'PXE_ROOT=%s\nPXE_LISTEN=%s\nHTTP_PORT=%s\nPXE_IMAGE=%s\n' \
+    "$PXE_ROOT" "$HTTP_HOST" "$HTTP_PORT" "$PXE_IMAGE" > "$HERE/.env"
 
-docker compose \
-    --project-directory "$HERE" \
-    --env-file "$HERE/.env" \
-    --file "$HERE/compose.yaml" \
-    up --detach --build
+if [ "$USE_PREBUILT" -eq 1 ]; then
+    docker compose \
+        --project-directory "$HERE" \
+        --env-file "$HERE/.env" \
+        --file "$HERE/compose.yaml" \
+        pull
+    docker compose \
+        --project-directory "$HERE" \
+        --env-file "$HERE/.env" \
+        --file "$HERE/compose.yaml" \
+        up --detach --no-build
+else
+    docker compose \
+        --project-directory "$HERE" \
+        --env-file "$HERE/.env" \
+        --file "$HERE/compose.yaml" \
+        up --detach --build
+fi
 
 printf '\nThinClient PXE services started.\n'
 printf '  TFTP next-server: %s\n' "$HTTP_HOST"
 printf '  HTTP root:        http://%s:%s/\n' "$HTTP_HOST" "$HTTP_PORT"
+printf '  Container image:  %s (%s)\n' "$PXE_IMAGE" \
+    "$( [ "$USE_PREBUILT" -eq 1 ] && printf pulled || printf locally-built )"
 printf '  Status:           docker compose -f %s/compose.yaml ps\n' "$HERE"

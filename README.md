@@ -592,6 +592,16 @@ menus to the Debian host, and documents the exact legacy ISC DHCP fields:
 sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
 
+The helper builds `thinclient-pxe-server:1.3` locally. To use the published
+container from GitHub Container Registry instead:
+
+```bash
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.3
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.3 \
+  bash deploy/docker-pxe/deploy.sh \
+  192.168.1.20 8080 /srv/thinclient/pxe-dual
+```
+
 See [`deploy/docker-pxe/README.md`](deploy/docker-pxe/README.md) for the file
 copy, firewall, OPNsense, verification, and upgrade steps.
 
