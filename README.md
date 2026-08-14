@@ -78,6 +78,7 @@ prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 | `overlay/` | Everything that gets laid on top of the base Debian filesystem. |
 | `pxe/` | Network-boot helpers and sample server configuration. |
 | `deploy/docker-pxe/` | TFTP + HTTP Docker Compose deployment for a Debian PXE host. |
+| `docs/PROJECT-ROADMAP.md` | Durable release checklist, design guardrails, and prioritized improvements. |
 | `out/` | Build output: the ISO, the PXE tree, and test screenshots. Created by the build. |
 
 ---

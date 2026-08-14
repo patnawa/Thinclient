@@ -8,6 +8,9 @@
 # somewhere else, or into a public repository.
 build/config.local.sh
 
+# Site-local operations handoffs may contain internal addresses and paths.
+docs/*.local.md
+
 # Anything captured from a client or a session.
 *.iso
 *.squashfs
