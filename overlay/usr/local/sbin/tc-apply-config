@@ -50,8 +50,17 @@ def safe_ntp_servers(value):
     """Return a timesyncd server list without allowing config-line injection."""
     if not isinstance(value, str):
         return ""
-    value = value.strip()
+    # Operators naturally type "dc1, dc2"; timesyncd wants spaces.
+    value = " ".join(value.replace(",", " ").split())
     return value if value and NTP_SERVERS.fullmatch(value) else ""
+
+
+def timesyncd_dropin(ntp):
+    # The image ships 10-thinclient.conf with the build-time default, and
+    # NTP= is a list setting that combines across drop-ins. Without the
+    # empty assignment resetting the list, the configured server queues
+    # behind the default instead of replacing it.
+    return "[Time]\nNTP=\nNTP=%s\n" % ntp
 
 
 def timezone_path(value, root="/usr/share/zoneinfo"):
@@ -108,7 +117,7 @@ def apply_time(device):
     if ntp:
         os.makedirs("/etc/systemd/timesyncd.conf.d", exist_ok=True)
         path = "/etc/systemd/timesyncd.conf.d/20-thinclient.conf"
-        wanted = "[Time]\nNTP=%s\n" % ntp
+        wanted = timesyncd_dropin(ntp)
         current = ""
         try:
             with open(path, "r", encoding="utf-8") as fh:

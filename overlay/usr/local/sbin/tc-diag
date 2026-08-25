@@ -74,6 +74,13 @@ fi
 echo "--- network ---"
 ip -brief address 2>/dev/null | grep -v '^lo'
 
+echo "--- time ---"
+timedatectl 2>/dev/null | sed 's/^ */  /' | head -6
+echo -n "  servers in use:"
+timedatectl show-timesync -p SystemNTPServers --value 2>/dev/null | tr '\n' ' '
+echo
+journalctl -b -u systemd-timesyncd --no-pager 2>/dev/null | tail -3 | sed 's/^/  /'
+
 echo "--- USB root cache ---"
 if [ -r /run/initramfs/tc-cache-status ]; then
     sed 's/^/  boot: /' /run/initramfs/tc-cache-status

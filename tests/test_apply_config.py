@@ -43,6 +43,21 @@ class RootConfigValidation(unittest.TestCase):
             with self.subTest(value=malicious):
                 self.assertEqual("", tc_apply_config.safe_ntp_servers(malicious))
 
+    def test_ntp_list_accepts_comma_separated_input(self):
+        self.assertEqual(
+            "dc01.example.com dc02.example.com",
+            tc_apply_config.safe_ntp_servers("dc01.example.com, dc02.example.com"),
+        )
+
+    def test_timesyncd_dropin_resets_the_list_before_assigning(self):
+        # The image ships a default NTP= in 10-thinclient.conf; list settings
+        # combine across drop-ins, so the runtime file must reset the list or
+        # the configured server merely queues behind the default.
+        self.assertEqual(
+            "[Time]\nNTP=\nNTP=dc01.example.com\n",
+            tc_apply_config.timesyncd_dropin("dc01.example.com"),
+        )
+
     def test_timezone_must_resolve_to_a_file_inside_zoneinfo(self):
         with tempfile.TemporaryDirectory() as private:
             root = Path(private, "zoneinfo")
