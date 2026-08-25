@@ -8,7 +8,7 @@
 approved connections, and gets out of the user's way.</p>
 
 <p>
-  <a href="build/config.sh"><img alt="Release 1.4" src="https://img.shields.io/badge/release-1.4-3478f6?style=flat-square"></a>
+  <a href="build/config.sh"><img alt="Release 1.4.1" src="https://img.shields.io/badge/release-1.4.1-3478f6?style=flat-square"></a>
   <a href="https://www.debian.org/"><img alt="Debian 13" src="https://img.shields.io/badge/Debian-13%20trixie-a81d33?style=flat-square&amp;logo=debian&amp;logoColor=white"></a>
   <a href="https://www.freerdp.com/"><img alt="FreeRDP 3" src="https://img.shields.io/badge/FreeRDP-3-2b6cb0?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22a06b?style=flat-square"></a>
@@ -66,7 +66,7 @@ sudo bash build/build.sh
 sudo bash build/verify-all.sh
 ```
 
-The result is `out/thinclient-amd64-1.4.iso`. See [Building](#building) for host
+The result is `out/thinclient-amd64-1.4.1.iso`. See [Building](#building) for host
 prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 [internal disk](#installing-to-a-clients-internal-disk), or
 [PXE](#deploying-by-pxe) deployment.
@@ -172,7 +172,7 @@ sudo bash build/build.sh
 Verify the completed artifact before deployment:
 
 ```bash
-(cd out && sha256sum -c thinclient-amd64-1.4.iso.sha256)
+(cd out && sha256sum -c thinclient-amd64-1.4.1.iso.sha256)
 ```
 
 First build takes 15–30 minutes (it downloads a full Debian base plus packages).
@@ -255,8 +255,8 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.4.iso     hybrid ISO: burn it, or dd it to a USB stick
-  thinclient-amd64-1.4.iso.sha256  exact release integrity/identity digest
+  thinclient-amd64-1.4.1.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.4.1.iso.sha256  exact release integrity/identity digest
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -388,7 +388,7 @@ embedded `TCCONF` to be writable.
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.4.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.4.1.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -598,12 +598,12 @@ menus to the Debian host, and documents the exact legacy ISC DHCP fields:
 sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
 
-The helper builds `thinclient-pxe-server:1.4` locally. To use the published
+The helper builds `thinclient-pxe-server:1.4.1` locally. To use the published
 container from GitHub Container Registry instead:
 
 ```bash
-sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.4
-sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.4 \
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.4.1
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.4.1 \
   bash deploy/docker-pxe/deploy.sh \
   192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```

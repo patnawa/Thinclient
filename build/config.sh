@@ -5,7 +5,7 @@
 
 # ---------------------------------------------------------------- identity ---
 DISTRO_NAME="${DISTRO_NAME:-ThinClient}"
-DISTRO_VERSION="${DISTRO_VERSION:-1.4}"
+DISTRO_VERSION="${DISTRO_VERSION:-1.4.1}"
 IMAGE_NAME="${IMAGE_NAME:-thinclient-amd64}"
 
 # ------------------------------------------------------------------- base ----

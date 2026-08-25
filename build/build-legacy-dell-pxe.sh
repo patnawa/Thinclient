@@ -5,7 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
-export DISTRO_VERSION="${DISTRO_VERSION:-1.4-lite}"
+export DISTRO_VERSION="${DISTRO_VERSION:-1.4.1-lite}"
 export IMAGE_NAME="${IMAGE_NAME:-thinclient-lite-amd64}"
 export WORKDIR="${WORKDIR:-/opt/tcbuild-dell-legacy}"
 export OUTDIR="${OUTDIR:-$REPO/out/legacy-dell}"

@@ -1,7 +1,17 @@
 # ThinClient changelog
 
-## Unreleased
+## 1.4.1 — 2026-08-25
 
+- Fixed the configured NTP server queueing behind the built-in
+  `pool.ntp.org` default: systemd combines `NTP=` list assignments across
+  drop-ins, so the runtime configuration now resets the list first. The
+  operator's server (typically the domain controller, which NLA/Kerberos
+  depend on) is now actually preferred.
+- Comma-separated NTP server lists from the settings UI are normalized to
+  the space-separated form timesyncd expects instead of being silently
+  discarded.
+- Added a time section to the boot diagnostics (`tc-diag`): sync status,
+  the NTP servers in use, and recent timesyncd log lines.
 - Corrected the UEFI menu wording for Docker deployments: when the
   warm-reboot-safe TFTP kernel/initrd path is selected by default, it is now
   labelled as restart-safe and recommended instead of as a recovery option;
