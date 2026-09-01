@@ -30,6 +30,7 @@ import collections
 import datetime
 import html
 import http.server
+import ipaddress
 import json
 import os
 import re
@@ -657,155 +658,499 @@ def format_bytes(value):
         amount /= 1024
 
 
+STATUS_SORT_FIELDS = {
+    "active.ip": ("active", "ip", "asc"),
+    "active.mac": ("active", "mac", "asc"),
+    "active.path": ("active", "path", "asc"),
+    "active.method": ("active", "method", "asc"),
+    "active.progress": ("active", "progress_percent", "desc"),
+    "active.speed": ("active", "bytes_per_second", "desc"),
+    "active.elapsed": ("active", "elapsed_seconds", "desc"),
+    "clients.mac": ("clients", "mac", "asc"),
+    "clients.ip": ("clients", "ip", "asc"),
+    "clients.profile": ("clients", "profile", "asc"),
+    "clients.last_seen": ("clients", "last_seen", "desc"),
+    "clients.requests": ("clients", "requests", "desc"),
+    "clients.boots": ("clients", "boots", "desc"),
+    "clients.bytes": ("clients", "bytes_sent", "desc"),
+    "clients.status": ("clients", "last_status", "desc"),
+    "clients.path": ("clients", "last_path", "asc"),
+    "requests.finished": ("requests", "finished_at", "desc"),
+    "requests.ip": ("requests", "ip", "asc"),
+    "requests.method": ("requests", "method", "asc"),
+    "requests.path": ("requests", "path", "asc"),
+    "requests.status": ("requests", "status", "desc"),
+    "requests.bytes": ("requests", "bytes_sent", "desc"),
+    "requests.duration": ("requests", "duration_seconds", "desc"),
+}
+
+
+def normalize_status_sort(sort_key=None, direction=None):
+    """Return a supported dashboard sort and direction, or no sort."""
+    if not isinstance(sort_key, str) or sort_key not in STATUS_SORT_FIELDS:
+        return None, None
+    default_direction = STATUS_SORT_FIELDS[sort_key][2]
+    if direction not in ("asc", "desc"):
+        direction = default_direction
+    return sort_key, direction
+
+
+def status_sort_from_url(url):
+    """Read bounded, allowlisted status sorting options from a request URL."""
+    try:
+        query = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(url).query,
+            keep_blank_values=False,
+            max_num_fields=8,
+        )
+    except ValueError:
+        return None, None
+    sort_key = (query.get("sort") or [None])[0]
+    direction = (query.get("dir") or [None])[0]
+    if isinstance(sort_key, str):
+        sort_key = sort_key[:64]
+    if isinstance(direction, str):
+        direction = direction[:8]
+    return normalize_status_sort(sort_key, direction)
+
+
+def _status_sort_value(row, field):
+    value = row.get(field)
+    if field == "ip":
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return (99, str(value).casefold())
+        return (address.version, int(address))
+    if isinstance(value, str):
+        return value.casefold()
+    return value
+
+
+def sort_status_rows(rows, section, sort_key=None, direction=None):
+    """Sort one dashboard table without mutating the monitor snapshot."""
+    sort_key, direction = normalize_status_sort(sort_key, direction)
+    if sort_key is None:
+        return list(rows)
+    configured_section, field, _default_direction = STATUS_SORT_FIELDS[sort_key]
+    if configured_section != section:
+        return list(rows)
+    present = []
+    missing = []
+    for row in rows:
+        value = row.get(field)
+        invalid_ip = False
+        if field == "ip" and value not in (None, ""):
+            try:
+                ipaddress.ip_address(value)
+            except ValueError:
+                invalid_ip = True
+        (missing if value in (None, "") or invalid_ip else present).append(row)
+    present.sort(
+        key=lambda row: _status_sort_value(row, field),
+        reverse=direction == "desc",
+    )
+    return present + missing
+
+
+def status_sort_header(label, sort_key, current_sort=None,
+                       current_direction=None):
+    """Render an accessible table heading that preserves sort on refresh."""
+    current_sort, current_direction = normalize_status_sort(
+        current_sort, current_direction
+    )
+    selected = current_sort == sort_key
+    default_direction = STATUS_SORT_FIELDS[sort_key][2]
+    if selected:
+        next_direction = "desc" if current_direction == "asc" else "asc"
+        indicator = "▲" if current_direction == "asc" else "▼"
+        aria_sort = ' aria-sort="%s"' % (
+            "ascending" if current_direction == "asc" else "descending"
+        )
+        active_class = " active"
+    else:
+        next_direction = default_direction
+        indicator = "↕"
+        aria_sort = ' aria-sort="none"'
+        active_class = ""
+    href = "/status?" + urllib.parse.urlencode({
+        "sort": sort_key,
+        "dir": next_direction,
+    })
+    action = "Sort %s %s" % (label, next_direction)
+    return (
+        '<th scope="col"%s><a class="sort-link%s" href="%s" '
+        'aria-label="%s">%s <span aria-hidden="true">%s</span></a></th>'
+        % (
+            aria_sort, active_class, html.escape(href, quote=True),
+            html.escape(action, quote=True), html.escape(label), indicator,
+        )
+    )
+
+
+def format_age(seconds):
+    """Format a recent age compactly for at-a-glance dashboard reading."""
+    try:
+        seconds = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return "unknown"
+    if seconds < 5:
+        return "just now"
+    if seconds < 60:
+        return "%ds ago" % seconds
+    minutes = seconds // 60
+    if minutes < 60:
+        return "%dm ago" % minutes
+    hours = minutes // 60
+    if hours < 48:
+        return "%dh ago" % hours
+    return "%dd ago" % (hours // 24)
+
+
 def status_html(snapshot, display_timezone=datetime.timezone.utc,
-                display_timezone_name="UTC"):
-    """Render the dependency-free, auto-refreshing status dashboard."""
+                display_timezone_name="UTC", sort_key=None,
+                sort_direction=None):
+    """Render the dependency-free, sortable, auto-refreshing dashboard."""
     escape = lambda value: html.escape(str(value if value is not None else "-"))
     display_time = lambda value: format_status_timestamp(value, display_timezone)
+    sort_key, sort_direction = normalize_status_sort(sort_key, sort_direction)
     totals = snapshot["totals"]
     health = snapshot["health"]
     health_class = "ok" if health["status"] == "ok" else "degraded"
 
-    active_rows = []
-    for transfer in snapshot["active_transfers"]:
-        if transfer["progress_percent"] is None:
-            progress = format_bytes(transfer["bytes_sent"])
+    try:
+        generated = datetime.datetime.fromisoformat(
+            snapshot["generated_at"].replace("Z", "+00:00")
+        )
+    except (AttributeError, ValueError):
+        generated = None
+
+    def seconds_ago(value):
+        if generated is None:
+            return None
+        try:
+            moment = datetime.datetime.fromisoformat(
+                value.replace("Z", "+00:00")
+            )
+        except (AttributeError, ValueError):
+            return None
+        return max(0.0, (generated - moment).total_seconds())
+
+    def time_cell(value, age=None):
+        exact = display_time(value)
+        if age is None:
+            primary, secondary = exact, ""
         else:
-            progress = "%s / %s (%.1f%%)" % (
+            primary = format_age(age)
+            secondary = '<span class="cell-note">%s</span>' % escape(exact)
+        return (
+            '<time datetime="%s" title="%s"><span class="time-main">%s</span>'
+            "%s</time>" % (
+                escape(value), escape(exact), escape(primary), secondary,
+            )
+        )
+
+    def status_pill(status, interrupted=False):
+        if interrupted and status == 0:
+            label = "interrupted"
+        else:
+            label = str(status if status is not None else "-")
+            if interrupted:
+                label += " interrupted"
+        good = isinstance(status, int) and 200 <= status < 400 and not interrupted
+        css_class = "good" if good else ("bad" if status is not None else "neutral")
+        return '<span class="status-code %s">%s</span>' % (
+            css_class, escape(label)
+        )
+
+    active_rows = []
+    active_transfers = sort_status_rows(
+        snapshot["active_transfers"], "active", sort_key, sort_direction
+    )
+    for transfer in active_transfers:
+        percent = transfer["progress_percent"]
+        if percent is None:
+            progress = '<span class="time-main">%s sent</span>' % escape(
+                format_bytes(transfer["bytes_sent"])
+            )
+        else:
+            percent = min(100.0, max(0.0, float(percent)))
+            progress_label = "%s / %s (%.1f%%)" % (
                 format_bytes(transfer["bytes_sent"]),
-                format_bytes(transfer["content_length"]),
-                transfer["progress_percent"],
+                format_bytes(transfer["content_length"]), percent,
+            )
+            progress = (
+                '<div class="progress" role="progressbar" aria-label="%s" '
+                'aria-valuemin="0" aria-valuemax="100" aria-valuenow="%.1f">'
+                '<span style="width:%.1f%%"></span></div>'
+                '<span class="cell-note">%s</span>' % (
+                    escape(progress_label), percent, percent,
+                    escape(progress_label),
+                )
             )
         active_rows.append(
-            "<tr><td>%s</td><td>%s</td><td><code>%s</code></td>"
-            "<td><code>%s</code></td><td>%s</td><td>%.1fs</td></tr>" % (
+            "<tr><td><code>%s</code></td><td><code>%s</code></td>"
+            '<td><code class="path" title="%s">%s</code></td>'
+            '<td><span class="method">%s</span></td><td>%s</td>'
+            '<td><span class="time-main">%s/s</span></td><td>%.1fs</td></tr>' % (
                 escape(transfer["ip"]), escape(transfer["mac"]),
-                escape(transfer["path"]), escape(transfer["method"]),
-                escape(progress), transfer["elapsed_seconds"],
+                escape(transfer["path"]), escape(transfer["path"]),
+                escape(transfer["method"]), progress,
+                escape(format_bytes(transfer["bytes_per_second"])),
+                transfer["elapsed_seconds"],
             )
         )
     if not active_rows:
-        active_rows.append('<tr><td colspan="6" class="empty">No active transfers</td></tr>')
+        active_rows.append(
+            '<tr><td colspan="7" class="empty"><strong>No active transfers</strong>'
+            '<span>Waiting for the next PXE client download.</span></td></tr>'
+        )
 
     client_rows = []
-    for client in snapshot["recent_clients"][:100]:
+    clients = sort_status_rows(
+        snapshot["recent_clients"][:100], "clients", sort_key, sort_direction
+    )
+    for client in clients:
+        last_status = client["last_status"]
+        row_class = ' class="row-error"' if (
+            isinstance(last_status, int) and not 200 <= last_status < 400
+        ) else ""
         client_rows.append(
-            "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td>"
-            "<td>%s</td><td>%s</td><td><code>%s</code></td></tr>" % (
-                escape(client["mac"]), escape(client["ip"]),
+            '<tr%s><td><code>%s</code></td><td><code>%s</code></td>'
+            '<td><span class="profile">%s</span></td><td>%s</td>'
+            '<td>%s</td><td>%s</td><td>%s</td><td>%s</td>'
+            '<td><code class="path" title="%s">%s</code></td></tr>' % (
+                row_class, escape(client["mac"]), escape(client["ip"]),
                 escape(client["profile"] or "-"),
-                escape(display_time(client["last_seen"])),
+                time_cell(client["last_seen"], client["last_seen_seconds_ago"]),
                 escape(client["requests"]), escape(client["boots"]),
+                escape(format_bytes(client["bytes_sent"])),
+                status_pill(last_status), escape(client["last_path"]),
                 escape(client["last_path"]),
             )
         )
     if not client_rows:
-        client_rows.append('<tr><td colspan="7" class="empty">No clients seen since startup</td></tr>')
+        client_rows.append(
+            '<tr><td colspan="9" class="empty"><strong>No clients seen</strong>'
+            '<span>Client inventory appears after the first HTTP request.</span></td></tr>'
+        )
 
     request_rows = []
-    for request in snapshot["recent_requests"][:50]:
+    requests = sort_status_rows(
+        snapshot["recent_requests"][:50], "requests", sort_key, sort_direction
+    )
+    for request in requests:
         request_ok = 200 <= request["status"] < 400 and not request["interrupted"]
-        status_class = "good-code" if request_ok else "bad-code"
-        if request["interrupted"] and request["status"] == 0:
-            status_label = "interrupted by restart"
-        else:
-            status_label = str(request["status"])
-            if request["interrupted"]:
-                status_label += " interrupted"
+        row_class = "" if request_ok else ' class="row-error"'
         request_rows.append(
-            "<tr><td>%s</td><td>%s</td><td><code>%s</code></td>"
-            "<td><span class=\"%s\">%s</span></td><td>%s</td><td>%.2fs</td></tr>" % (
-                escape(display_time(request["finished_at"])),
-                escape(request["ip"]),
-                escape(request["path"]), status_class, escape(status_label),
+            '<tr%s><td>%s</td><td><code>%s</code></td>'
+            '<td><span class="method">%s</span></td>'
+            '<td><code class="path" title="%s">%s</code></td>'
+            '<td>%s</td><td>%s</td><td>%.2fs</td></tr>' % (
+                row_class,
+                time_cell(request["finished_at"], seconds_ago(request["finished_at"])),
+                escape(request["ip"]), escape(request["method"]),
+                escape(request["path"]), escape(request["path"]),
+                status_pill(request["status"], request["interrupted"]),
                 escape(format_bytes(request["bytes_sent"])),
                 request["duration_seconds"],
             )
         )
     if not request_rows:
-        request_rows.append('<tr><td colspan="6" class="empty">No requests seen since startup</td></tr>')
+        request_rows.append(
+            '<tr><td colspan="7" class="empty"><strong>No requests recorded</strong>'
+            '<span>Health and status probes are intentionally excluded.</span></td></tr>'
+        )
 
-    missing = ""
+    active_headers = "".join((
+        status_sort_header("IP address", "active.ip", sort_key, sort_direction),
+        status_sort_header("MAC", "active.mac", sort_key, sort_direction),
+        status_sort_header("Path", "active.path", sort_key, sort_direction),
+        status_sort_header("Method", "active.method", sort_key, sort_direction),
+        status_sort_header("Progress", "active.progress", sort_key, sort_direction),
+        status_sort_header("Speed", "active.speed", sort_key, sort_direction),
+        status_sort_header("Elapsed", "active.elapsed", sort_key, sort_direction),
+    ))
+    client_headers = "".join((
+        status_sort_header("MAC", "clients.mac", sort_key, sort_direction),
+        status_sort_header("IP address", "clients.ip", sort_key, sort_direction),
+        status_sort_header("Profile", "clients.profile", sort_key, sort_direction),
+        status_sort_header(
+            "Last seen (%s)" % display_timezone_name,
+            "clients.last_seen", sort_key, sort_direction,
+        ),
+        status_sort_header("Requests", "clients.requests", sort_key, sort_direction),
+        status_sort_header("Downloads", "clients.boots", sort_key, sort_direction),
+        status_sort_header("Data", "clients.bytes", sort_key, sort_direction),
+        status_sort_header("Last status", "clients.status", sort_key, sort_direction),
+        status_sort_header("Last path", "clients.path", sort_key, sort_direction),
+    ))
+    request_headers = "".join((
+        status_sort_header(
+            "Finished (%s)" % display_timezone_name,
+            "requests.finished", sort_key, sort_direction,
+        ),
+        status_sort_header("IP address", "requests.ip", sort_key, sort_direction),
+        status_sort_header("Method", "requests.method", sort_key, sort_direction),
+        status_sort_header("Path", "requests.path", sort_key, sort_direction),
+        status_sort_header("Status", "requests.status", sort_key, sort_direction),
+        status_sort_header("Sent", "requests.bytes", sort_key, sort_direction),
+        status_sort_header("Duration", "requests.duration", sort_key, sort_direction),
+    ))
+
+    alerts = []
     if health["missing"]:
-        missing = "<p class=\"warning\">Missing or unreadable: %s</p>" % escape(
-            ", ".join(health["missing"])
+        alerts.append("Missing or unreadable: %s" % ", ".join(health["missing"]))
+    alerts.extend(health["problems"])
+    alerts_html = "" if not alerts else (
+        '<div class="alerts" role="alert">%s</div>' % "".join(
+            '<p>%s</p>' % escape(message) for message in alerts
         )
-    if health["problems"]:
-        missing += "<p class=\"warning\">%s</p>" % escape(
-            ", ".join(health["problems"])
+    )
+
+    def summary_card(label, value, note, css_class=""):
+        return (
+            '<article class="card %s"><span>%s</span><strong>%s</strong>'
+            '<small>%s</small></article>' % (
+                css_class, escape(label), escape(value), escape(note),
+            )
         )
+
+    failure_class = "danger" if totals["failed_requests"] else "healthy"
+    cards = "".join((
+        summary_card("Active transfers", totals["active_transfers"],
+                     "downloading now", "live" if totals["active_transfers"] else ""),
+        summary_card("Clients seen", totals["clients"],
+                     "%s identified by MAC" % totals["identified_clients"]),
+        summary_card("Root downloads", totals["boots"], "completed successfully"),
+        summary_card("Requests", totals["requests"],
+                     "%s successful" % totals["successful_requests"]),
+        summary_card("Failures", totals["failed_requests"],
+                     "none recorded" if not totals["failed_requests"] else "review rows below",
+                     failure_class),
+        summary_card("Data served", format_bytes(totals["bytes_sent"]),
+                     "HTTP payload total"),
+    ))
+
+    if sort_key:
+        refresh_url = "/status?" + urllib.parse.urlencode({
+            "sort": sort_key, "dir": sort_direction,
+        })
+    else:
+        refresh_url = "/status"
 
     return ("""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <meta http-equiv="refresh" content="10">
 <title>ThinClient PXE status</title>
 <style>
-:root { color-scheme: dark; --bg:#0b1220; --panel:#111c2e; --line:#26364f;
-  --text:#e7eef9; --muted:#9badc5; --green:#46d18b; --amber:#ffbd59;
-  --red:#ff6b78; --blue:#65a8ff; }
-* { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--text);
+:root { color-scheme:dark; --bg:#07101d; --panel:#101b2d; --panel-2:#142238;
+  --line:#273b58; --line-soft:#1d2d45; --text:#ecf3fc; --muted:#9fb0c7;
+  --green:#45d692; --amber:#ffc15c; --red:#ff7180; --blue:#70b2ff; }
+* { box-sizing:border-box; } body { margin:0; min-height:100vh; color:var(--text);
+  background:radial-gradient(circle at 15%% -10%%,#16355d 0,transparent 34rem),var(--bg);
   font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
-main { width:min(1500px,96vw); margin:28px auto 48px; }
-header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px;
-  margin-bottom:18px; } h1 { font-size:25px; margin:0 0 5px; }
-h2 { font-size:17px; margin:0 0 13px; } p { margin:0; color:var(--muted); }
-a { color:var(--blue); } .badge { display:inline-flex; align-items:center; gap:8px;
-  padding:7px 11px; border:1px solid var(--line); border-radius:999px;
-  text-transform:uppercase; font-size:12px; font-weight:700; letter-spacing:.05em; }
-.badge::before { content:""; width:9px; height:9px; border-radius:50%%; background:currentColor; }
-.badge.ok { color:var(--green); }.badge.degraded { color:var(--amber); }
-.cards { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:12px;
-  margin:18px 0; }.card,.panel { background:var(--panel); border:1px solid var(--line);
-  border-radius:12px; box-shadow:0 8px 28px #0003; }.card { padding:15px; }
-.card span { display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }
-.card strong { font-size:23px; font-variant-numeric:tabular-nums; }
-.panel { padding:17px; margin-top:14px; overflow:hidden; }.table-wrap { overflow:auto; }
-table { width:100%%; border-collapse:collapse; white-space:nowrap; }
-th,td { padding:9px 10px; text-align:left; border-bottom:1px solid var(--line); }
-th { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-tbody tr:last-child td { border-bottom:0; } code { color:#c6dcff; }
-.empty { color:var(--muted); text-align:center; padding:25px; }.good-code { color:var(--green); }
-.bad-code { color:var(--red); }.warning { color:var(--amber); margin-top:8px; }
-footer { color:var(--muted); margin-top:16px; font-size:12px; }
-@media(max-width:800px) { .cards { grid-template-columns:repeat(2,1fr); }
-  header { flex-direction:column; } }
+main { width:min(1560px,96vw); margin:0 auto; padding:30px 0 48px; }
+header { display:flex; align-items:flex-start; justify-content:space-between; gap:24px;
+  padding:4px 2px 18px; } h1 { margin:2px 0 6px; font-size:clamp(24px,3vw,34px);
+  letter-spacing:-.025em; } h2 { margin:0; font-size:18px; } p { margin:0; color:var(--muted); }
+.eyebrow { color:var(--blue); font-size:11px; font-weight:800; letter-spacing:.13em;
+  text-transform:uppercase; }.header-actions { display:flex; align-items:center; gap:9px;
+  flex-wrap:wrap; justify-content:flex-end; }.button { padding:8px 11px; color:var(--text);
+  text-decoration:none; border:1px solid var(--line); border-radius:9px; background:#11223a; }
+.button:hover { border-color:var(--blue); }.badge { display:inline-flex; align-items:center;
+  gap:8px; padding:8px 12px; border:1px solid var(--line); border-radius:999px;
+  text-transform:uppercase; font-size:12px; font-weight:800; letter-spacing:.06em; }
+.badge::before { content:""; width:9px; height:9px; border-radius:50%%; background:currentColor;
+  box-shadow:0 0 0 4px #ffffff0d; }.badge.ok { color:var(--green); }
+.badge.degraded { color:var(--amber); }.alerts { margin:0 0 14px; padding:12px 14px;
+  border:1px solid #8b682e; border-radius:10px; background:#3b2d173d; }
+.alerts p { color:var(--amber); }.cards { display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(155px,1fr)); gap:11px; margin:0 0 15px; }
+.card,.panel { background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border:1px solid var(--line); border-radius:13px; box-shadow:0 12px 32px #0003; }
+.card { min-height:112px; padding:16px; border-top:3px solid var(--line); }
+.card.live { border-top-color:var(--blue); }.card.healthy { border-top-color:var(--green); }
+.card.danger { border-top-color:var(--red); }.card>span { display:block; color:var(--muted);
+  font-size:12px; font-weight:700; }.card strong { display:block; margin:5px 0 2px;
+  font-size:25px; font-variant-numeric:tabular-nums; }.card small { color:var(--muted); }
+.panel { margin-top:13px; overflow:hidden; }.panel-title { display:flex; align-items:center;
+  justify-content:space-between; gap:16px; padding:16px 17px 12px; }.panel-title p {
+  margin-top:3px; font-size:12px; }.count { min-width:32px; padding:4px 9px;
+  border:1px solid var(--line); border-radius:999px; color:var(--muted); text-align:center;
+  font-variant-numeric:tabular-nums; }.table-wrap { overflow:auto; border-top:1px solid var(--line-soft); }
+table { width:100%%; border-collapse:separate; border-spacing:0; white-space:nowrap; }
+th,td { padding:10px 11px; text-align:left; border-bottom:1px solid var(--line-soft);
+  font-variant-numeric:tabular-nums; } th { position:sticky; top:0; z-index:1;
+  background:#0e192a; color:var(--muted); font-size:11px; text-transform:uppercase;
+  letter-spacing:.055em; } tbody tr:nth-child(even) { background:#ffffff05; }
+tbody tr:hover { background:#70b2ff0d; } tbody tr:last-child td { border-bottom:0; }
+.row-error { background:#ff71800a !important; }.sort-link { display:flex; align-items:center;
+  justify-content:space-between; gap:8px; min-height:24px; color:inherit; text-decoration:none; }
+.sort-link:hover,.sort-link.active { color:var(--blue); }.sort-link span { font-size:10px; }
+code { color:#cce1ff; font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.path { display:block; max-width:430px; overflow:hidden; text-overflow:ellipsis; }
+.method,.profile { display:inline-block; padding:2px 7px; border:1px solid var(--line);
+  border-radius:6px; color:#d6e6fa; background:#0a1524; font-size:11px; font-weight:700; }
+.status-code { display:inline-block; min-width:42px; padding:3px 7px; border-radius:999px;
+  text-align:center; font-size:11px; font-weight:800; }.status-code.good { color:var(--green);
+  background:#45d69216; border:1px solid #45d69242; }.status-code.bad { color:var(--red);
+  background:#ff718016; border:1px solid #ff718042; }.status-code.neutral { color:var(--muted);
+  border:1px solid var(--line); }.time-main { display:block; color:var(--text); }
+.cell-note { display:block; margin-top:2px; color:var(--muted); font-size:11px; }
+.progress { width:170px; height:7px; overflow:hidden; border-radius:999px;
+  background:#07101d; border:1px solid var(--line-soft); }.progress span { display:block;
+  height:100%%; border-radius:inherit; background:linear-gradient(90deg,var(--blue),var(--green)); }
+.empty { padding:28px !important; color:var(--muted); text-align:center; }
+.empty strong,.empty span { display:block; }.empty strong { color:var(--text); margin-bottom:3px; }
+footer { display:flex; flex-wrap:wrap; gap:6px 12px; color:var(--muted); margin-top:16px;
+  padding:0 3px; font-size:12px; } footer a { color:var(--blue); }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+a:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+@media(max-width:760px) { main { width:min(100%% - 20px,1560px); padding-top:18px; }
+  header { flex-direction:column; }.header-actions { justify-content:flex-start; }
+  .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }.card { min-height:102px; }
+  .panel-title { align-items:flex-start; }.path { max-width:280px; } }
+@media(max-width:430px) { .cards { grid-template-columns:1fr; }.card { min-height:auto; }
+  .header-actions { width:100%%; }.button { flex:1; text-align:center; } }
 </style>
 </head>
 <body><main>
-<header><div><h1>ThinClient PXE HTTP</h1><p>Service up since %s · retained history since %s · timezone %s</p></div>
-<div class="badge %s">%s</div></header>
+<header><div><span class="eyebrow">Live PXE fleet monitor</span><h1>ThinClient PXE HTTP</h1>
+<p>Service up since %s · retained history since %s · timezone %s</p></div>
+<div class="header-actions"><a class="button" href="%s">Refresh now</a>
+<a class="button" href="/status.json">JSON</a><div class="badge %s" aria-live="polite">%s</div></div></header>
 %s
-<section class="cards">
-<div class="card"><span>Active transfers</span><strong>%s</strong></div>
-<div class="card"><span>Clients seen</span><strong>%s</strong></div>
-<div class="card"><span>Root downloads</span><strong>%s</strong></div>
-<div class="card"><span>Requests</span><strong>%s</strong></div>
-<div class="card"><span>Data served</span><strong>%s</strong></div>
-</section>
-<section class="panel"><h2>Active transfers</h2><div class="table-wrap"><table>
-<thead><tr><th>IP address</th><th>MAC</th><th>Path</th><th>Method</th><th>Progress</th><th>Elapsed</th></tr></thead>
-<tbody>%s</tbody></table></div></section>
-<section class="panel"><h2>Recently seen clients</h2><div class="table-wrap"><table>
-<thead><tr><th>MAC</th><th>IP address</th><th>Profile</th><th>Last seen (%s)</th><th>Requests</th><th>Root downloads</th><th>Last path</th></tr></thead>
-<tbody>%s</tbody></table></div></section>
-<section class="panel"><h2>Recent requests</h2><div class="table-wrap"><table>
-<thead><tr><th>Finished (%s)</th><th>IP address</th><th>Path</th><th>Status</th><th>Sent</th><th>Duration</th></tr></thead>
-<tbody>%s</tbody></table></div></section>
-<footer>Updated %s (%s) · refreshes every 10 seconds · persistent state: %s · service starts: %s · <a href="/status.json">JSON status</a></footer>
+<section class="cards" aria-label="Service summary">%s</section>
+<section class="panel"><div class="panel-title"><div><h2>Active transfers</h2>
+<p>Live progress and throughput. Select a heading to sort.</p></div><span class="count">%s</span></div>
+<div class="table-wrap"><table><caption class="sr-only">Active HTTP transfers</caption>
+<thead><tr>%s</tr></thead><tbody>%s</tbody></table></div></section>
+<section class="panel"><div class="panel-title"><div><h2>Recently seen clients</h2>
+<p>Most recent 100 clients. Sorting survives automatic refresh.</p></div><span class="count">%s</span></div>
+<div class="table-wrap"><table><caption class="sr-only">Recently seen clients</caption>
+<thead><tr>%s</tr></thead><tbody>%s</tbody></table></div></section>
+<section class="panel"><div class="panel-title"><div><h2>Recent requests</h2>
+<p>Latest 50 PXE HTTP requests; failures are highlighted.</p></div><span class="count">%s</span></div>
+<div class="table-wrap"><table><caption class="sr-only">Recent HTTP requests</caption>
+<thead><tr>%s</tr></thead><tbody>%s</tbody></table></div></section>
+<footer><span>Updated %s (%s)</span><span>Refreshes every 10 seconds</span>
+<span>Persistent state: %s</span><span>Service starts: %s</span></footer>
 </main></body></html>
 """) % (
         escape(display_time(snapshot["started_at"])),
         escape(display_time(snapshot["history_started_at"])),
-        escape(display_timezone_name), health_class,
-        escape(health["status"]), missing,
-        totals["active_transfers"], totals["clients"], totals["boots"],
-        totals["requests"], escape(format_bytes(totals["bytes_sent"])),
-        "".join(active_rows), escape(display_timezone_name),
-        "".join(client_rows), escape(display_timezone_name),
-        "".join(request_rows), escape(display_time(snapshot["generated_at"])),
+        escape(display_timezone_name), escape(refresh_url), health_class,
+        escape(health["status"]), alerts_html, cards,
+        len(active_transfers), active_headers, "".join(active_rows),
+        len(clients), client_headers, "".join(client_rows),
+        len(requests), request_headers, "".join(request_rows),
+        escape(display_time(snapshot["generated_at"])),
         escape(display_timezone_name), escape(snapshot["persistence"]["status"]),
         escape(totals["server_starts"]),
     )
@@ -976,11 +1321,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 200, "application/json; charset=utf-8", body, head_only
             )
         else:
+            sort_key, sort_direction = status_sort_from_url(self.path)
             self._send_monitor_response(
                 200, "text/html; charset=utf-8",
                 status_html(
                     self._status_snapshot(), self.status_timezone,
-                    self.status_timezone_name,
+                    self.status_timezone_name, sort_key, sort_direction,
                 ), head_only,
             )
         return True

@@ -97,6 +97,77 @@ class StatusTimestampFormatting(unittest.TestCase):
             config_server.utc_timestamp(1788256729),
         )
 
+    def test_sort_options_are_allowlisted_and_bounded(self):
+        self.assertEqual(
+            ("clients.ip", "asc"),
+            config_server.status_sort_from_url(
+                "/status?sort=clients.ip&dir=sideways"
+            ),
+        )
+        self.assertEqual(
+            (None, None),
+            config_server.status_sort_from_url(
+                "/status?sort=%3Cscript%3E&dir=asc"
+            ),
+        )
+        too_many = "/status?" + "&".join("field%d=x" % index for index in range(9))
+        self.assertEqual(
+            (None, None), config_server.status_sort_from_url(too_many)
+        )
+
+    def test_ip_sort_is_natural_and_does_not_mutate_snapshot_rows(self):
+        rows = [
+            {"ip": "192.168.10.10"},
+            {"ip": "not-an-ip"},
+            {"ip": None},
+            {"ip": "192.168.10.2"},
+        ]
+
+        sorted_rows = config_server.sort_status_rows(
+            rows, "clients", "clients.ip", "asc"
+        )
+
+        self.assertEqual(
+            ["192.168.10.2", "192.168.10.10", "not-an-ip", None],
+            [row["ip"] for row in sorted_rows],
+        )
+        self.assertEqual("192.168.10.10", rows[0]["ip"])
+
+    def test_server_rendered_sort_marks_heading_and_orders_rows(self):
+        monitor = config_server.StatusMonitor()
+        for address in ("192.168.10.10", "192.168.10.2"):
+            request_id = monitor.begin("GET", "/config.json", address)
+            monitor.finish(request_id, 200)
+        snapshot = monitor.snapshot()
+        snapshot["health"] = {"status": "ok", "missing": [], "problems": []}
+
+        page = config_server.status_html(
+            snapshot,
+            datetime.timezone(datetime.timedelta(hours=7)),
+            "Asia/Bangkok",
+            "clients.ip",
+            "asc",
+        )
+
+        self.assertLess(page.index("192.168.10.2"), page.index("192.168.10.10"))
+        self.assertIn('aria-sort="ascending"', page)
+        self.assertIn("sort=clients.ip&amp;dir=desc", page)
+        self.assertNotIn("<script", page)
+
+    def test_dashboard_escapes_monitor_values(self):
+        monitor = config_server.StatusMonitor()
+        request_id = monitor.begin(
+            "GET", '/<img src=x onerror="alert(1)">', "192.0.2.1"
+        )
+        monitor.finish(request_id, 404)
+        snapshot = monitor.snapshot()
+        snapshot["health"] = {"status": "ok", "missing": [], "problems": []}
+
+        page = config_server.status_html(snapshot)
+
+        self.assertNotIn('<img src=x onerror="alert(1)">', page)
+        self.assertIn("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;", page)
+
 
 @unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
 class ConfigServerHttp(unittest.TestCase):
@@ -288,6 +359,23 @@ class ConfigServerHttp(unittest.TestCase):
         self.assertEqual(200, head_status)
         self.assertEqual(b"", head_body)
         self.assertGreater(int(head_headers["Content-Length"]), 0)
+
+    def test_status_sort_query_is_safe_and_survives_refresh(self):
+        self.write("config.json", "{}")
+
+        status, headers, body = self.request(
+            "GET", "/status?sort=requests.status&dir=asc"
+        )
+        invalid_status, _invalid_headers, invalid_body = self.request(
+            "GET", "/status?sort=%3Cscript%3E&dir=sideways"
+        )
+
+        self.assertEqual(200, status)
+        self.assertEqual(200, invalid_status)
+        self.assertIn(b'aria-sort="ascending"', body)
+        self.assertIn(b"sort=requests.status&amp;dir=desc", body)
+        self.assertIn(b"default-src 'none'", headers["Content-Security-Policy"].encode())
+        self.assertNotIn(b"<script", invalid_body)
 
     def test_failed_static_requests_appear_in_status(self):
         status, _headers, _body = self.request("GET", "/missing.img")

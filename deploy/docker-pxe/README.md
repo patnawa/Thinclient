@@ -155,7 +155,11 @@ curl -I http://127.0.0.1:8080/thinclient/full/filesystem.squashfs
 Open `http://192.168.1.20:8080/status` from an administrative LAN machine to
 see HTTP health, active PXE transfers, recently seen client IP/MAC addresses,
 root-image downloads, request results, and bytes served. The page refreshes
-every ten seconds. For monitoring systems, use the JSON and health endpoints:
+every ten seconds. Select any table heading to sort that table; the selected
+sort and direction remain in the URL and survive automatic refresh without
+requiring JavaScript. Failures are highlighted, active downloads include
+progress and throughput, and timestamps show both relative and exact local
+time. For monitoring systems, use the JSON and health endpoints:
 
 ```bash
 curl -fsS http://192.168.1.20:8080/status.json

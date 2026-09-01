@@ -14,6 +14,9 @@
   the host filesystem while retaining normal `docker logs` operation.
 - Made human dashboard timestamps follow the deployment's IANA timezone (for
   example, `Asia/Bangkok`) while retaining UTC timestamps in the JSON API.
+- Improved the status dashboard with sortable tables, clearer health and
+  failure summaries, relative timestamps, transfer progress/throughput,
+  responsive layouts, and accessible no-JavaScript controls.
 
 ## 1.4.1 — 2026-08-25
 
