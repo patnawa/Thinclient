@@ -97,6 +97,7 @@ fi
 printf '\nThinClient PXE services started.\n'
 printf '  TFTP next-server: %s\n' "$HTTP_HOST"
 printf '  HTTP root:        http://%s:%s/\n' "$HTTP_HOST" "$HTTP_PORT"
+printf '  HTTP monitor:     http://%s:%s/status\n' "$HTTP_HOST" "$HTTP_PORT"
 printf '  Container image:  %s (%s)\n' "$PXE_IMAGE" \
     "$( [ "$USE_PREBUILT" -eq 1 ] && printf pulled || printf locally-built )"
 printf '  Status:           docker compose -f %s/compose.yaml ps\n' "$HERE"

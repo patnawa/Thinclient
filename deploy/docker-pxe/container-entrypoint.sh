@@ -67,7 +67,8 @@ case "${1:-}" in
         exec python3 /usr/local/lib/thinclient/tc-config-server.py \
             --root "$PXE_ROOT" \
             --bind "${HTTP_BIND:-0.0.0.0}" \
-            --port "${HTTP_PORT:-8080}"
+            --port "${HTTP_PORT:-8080}" \
+            --state-file "${STATUS_STATE_FILE:-/var/lib/thinclient/http-status.json}"
         ;;
     "")
         die "select a service: tftp or http"

@@ -144,9 +144,42 @@ On Debian:
 cd deploy/docker-pxe
 sudo docker compose ps
 sudo docker compose logs --follow
+curl -fsS http://127.0.0.1:8080/healthz
 curl -I http://127.0.0.1:8080/thinclient/lite/filesystem.squashfs
 curl -I http://127.0.0.1:8080/thinclient/full/filesystem.squashfs
 ```
+
+### HTTP status monitor
+
+Open `http://192.168.1.20:8080/status` from an administrative LAN machine to
+see HTTP health, active PXE transfers, recently seen client IP/MAC addresses,
+root-image downloads, request results, and bytes served. The page refreshes
+every ten seconds. For monitoring systems, use the JSON and health endpoints:
+
+```bash
+curl -fsS http://192.168.1.20:8080/status.json
+curl -fsS http://192.168.1.20:8080/healthz
+```
+
+The monitor is intentionally dependency-free and keeps at most 256 clients and
+100 recent requests. Completed history is written atomically to the Docker
+named volume `thinclient-pxe_status-data`, so it survives HTTP process crashes,
+container recreation, Docker restarts, and host reboots. If a crash interrupts
+an active transfer, the next server process records it as interrupted rather
+than as a successful boot. Persistence failures make `/healthz` return HTTP
+503 and mark the container unhealthy.
+
+`docker compose down` preserves the status volume. Do not add `--volumes` to
+that command unless you deliberately want to erase the retained history.
+Status requests and Docker health probes are excluded from the counters. The
+page exposes client IP and MAC addresses, so keep port 8080 restricted to
+trusted LAN/VLAN networks and never publish it to the WAN.
+
+Both PXE containers use Docker's rotating `local` log driver. Each container
+keeps at most three 10 MiB log files, limiting combined PXE container logs to
+about 60 MiB while preserving `docker compose logs` and `docker logs`. The
+health and status endpoints are deliberately excluded from access logs, so the
+30-second health probe does not consume the retained log budget.
 
 From another LAN machine with a TFTP client:
 

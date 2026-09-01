@@ -1,5 +1,18 @@
 # ThinClient changelog
 
+## Unreleased
+
+- Added a built-in PXE HTTP status dashboard, JSON status API, and dedicated
+  health endpoint with active-transfer progress and recent client IP/MAC
+  inventory.
+- Persisted bounded monitor history atomically in a Docker named volume so it
+  survives process crashes, container recreation, and host reboots. Transfers
+  interrupted by a crash are recovered as failures instead of successful
+  boots, and persistence failures now make the container unhealthy.
+- Capped each PXE container's Docker logs at three rotating 10 MiB files using
+  the efficient `local` driver, preventing unattended access logs from filling
+  the host filesystem while retaining normal `docker logs` operation.
+
 ## 1.4.1 — 2026-08-25
 
 - Fixed the configured NTP server queueing behind the built-in

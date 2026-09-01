@@ -1,6 +1,7 @@
 """Behaviour of the small HTTP server used for PXE and central configuration."""
 
 import contextlib
+import concurrent.futures
 import http.client
 import importlib.util
 import io
@@ -90,7 +91,11 @@ class ConfigServerHttp(unittest.TestCase):
         handler = type(
             "QuietHandler",
             (config_server.Handler,),
-            {"root": str(self.root), "log_message": lambda *_args: None},
+            {
+                "root": str(self.root),
+                "status_monitor": config_server.StatusMonitor(),
+                "log_message": lambda *_args: None,
+            },
         )
         self.server = config_server.Server(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -198,6 +203,234 @@ class ConfigServerHttp(unittest.TestCase):
             with self.subTest(path=path):
                 status, _headers, _body = self.request("GET", path)
                 self.assertEqual(404, status)
+
+    def test_health_and_status_requests_are_not_counted(self):
+        status, headers, body = self.request("GET", "/healthz")
+
+        self.assertEqual(503, status)
+        self.assertEqual("no-store", headers["Cache-Control"])
+        self.assertEqual("degraded", json.loads(body)["status"])
+
+        self.write("config.json", "{}")
+        status, _headers, body = self.request("GET", "/healthz")
+        self.assertEqual(200, status)
+        self.assertEqual("ok", json.loads(body)["status"])
+
+        status, _headers, body = self.request("GET", "/status.json")
+        snapshot = json.loads(body)
+        self.assertEqual(200, status)
+        self.assertEqual("ok", snapshot["status"])
+        self.assertEqual(0, snapshot["totals"]["requests"])
+        self.assertEqual([], snapshot["recent_clients"])
+
+    def test_status_json_tracks_identified_clients_and_served_bytes(self):
+        config_body = '{"connections": []}'
+        self.write("config.json", config_body)
+
+        status, _headers, body = self.request(
+            "GET", "/config.json",
+            {"X-ThinClient-MAC": "AA:BB:CC:DD:EE:FF"},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(config_body.encode(), body)
+
+        status, _headers, body = self.request("GET", "/status.json")
+        snapshot = json.loads(body)
+        client = snapshot["recent_clients"][0]
+        request = snapshot["recent_requests"][0]
+
+        self.assertEqual(200, status)
+        self.assertEqual(1, snapshot["totals"]["requests"])
+        self.assertEqual(1, snapshot["totals"]["successful_requests"])
+        self.assertEqual(len(config_body), snapshot["totals"]["bytes_sent"])
+        self.assertEqual("aa:bb:cc:dd:ee:ff", client["mac"])
+        self.assertEqual("/config.json", client["last_path"])
+        self.assertEqual(200, client["last_status"])
+        self.assertEqual(len(config_body), client["bytes_sent"])
+        self.assertEqual(200, request["status"])
+
+    def test_status_html_is_available_for_get_and_head(self):
+        self.write("config.json", "{}")
+
+        status, headers, body = self.request("GET", "/status")
+        head_status, head_headers, head_body = self.request("HEAD", "/status/")
+
+        self.assertEqual(200, status)
+        self.assertTrue(headers["Content-Type"].startswith("text/html"))
+        self.assertIn(b"ThinClient PXE HTTP", body)
+        self.assertIn(b"/status.json", body)
+        self.assertEqual(200, head_status)
+        self.assertEqual(b"", head_body)
+        self.assertGreater(int(head_headers["Content-Length"]), 0)
+
+    def test_failed_static_requests_appear_in_status(self):
+        status, _headers, _body = self.request("GET", "/missing.img")
+        self.assertEqual(404, status)
+
+        _status, _headers, body = self.request("GET", "/status.json")
+        snapshot = json.loads(body)
+
+        self.assertEqual(1, snapshot["totals"]["failed_requests"])
+        self.assertEqual(404, snapshot["recent_requests"][0]["status"])
+        self.assertEqual("/missing.img", snapshot["recent_requests"][0]["path"])
+
+
+@unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
+class StatusMonitorState(unittest.TestCase):
+    def test_anonymous_boot_activity_merges_when_mac_arrives(self):
+        monitor = config_server.StatusMonitor()
+        root_request = monitor.begin(
+            "GET", "/thinclient/lite/filesystem.squashfs", "192.0.2.10"
+        )
+        monitor.set_content_length(root_request, 1024)
+        monitor.add_bytes(root_request, 1024)
+        monitor.finish(root_request, 200)
+
+        config_request = monitor.begin(
+            "GET", "/config.json", "192.0.2.10", "aa:bb:cc:dd:ee:ff"
+        )
+        monitor.finish(config_request, 200)
+        snapshot = monitor.snapshot()
+
+        self.assertEqual(1, snapshot["totals"]["clients"])
+        self.assertEqual(1, snapshot["totals"]["boots"])
+        self.assertEqual(2, snapshot["totals"]["requests"])
+        client = snapshot["recent_clients"][0]
+        self.assertEqual("aa:bb:cc:dd:ee:ff", client["mac"])
+        self.assertEqual("lite", client["profile"])
+        self.assertEqual(1, client["boots"])
+        self.assertEqual(2, client["requests"])
+        self.assertEqual(1024, client["bytes_sent"])
+
+    def test_snapshot_reports_active_transfer_progress(self):
+        monitor = config_server.StatusMonitor()
+        request_id = monitor.begin("GET", "/large.img", "192.0.2.20")
+        monitor.set_content_length(request_id, 1000)
+        monitor.add_bytes(request_id, 250)
+
+        snapshot = monitor.snapshot()
+        transfer = snapshot["active_transfers"][0]
+
+        self.assertEqual(1, snapshot["totals"]["active_transfers"])
+        self.assertEqual(25.0, transfer["progress_percent"])
+        self.assertEqual(250, transfer["bytes_sent"])
+
+    def test_interrupted_transfer_is_failed_and_not_counted_as_a_boot(self):
+        monitor = config_server.StatusMonitor()
+        request_id = monitor.begin(
+            "GET", "/thinclient/lite/filesystem.squashfs", "192.0.2.30"
+        )
+        monitor.add_bytes(request_id, 512)
+        monitor.finish(request_id, 200, interrupted=True)
+        snapshot = monitor.snapshot()
+        snapshot["health"] = {"status": "ok", "missing": [], "problems": []}
+
+        self.assertEqual(1, snapshot["totals"]["failed_requests"])
+        self.assertEqual(0, snapshot["totals"]["boots"])
+        self.assertTrue(snapshot["recent_requests"][0]["interrupted"])
+        self.assertIn("200 interrupted", config_server.status_html(snapshot))
+
+    def test_completed_history_survives_monitor_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory, "http-status.json")
+            first = config_server.StatusMonitor(state_file=str(state_file))
+            root_request = first.begin(
+                "GET", "/thinclient/lite/filesystem.squashfs", "192.0.2.40"
+            )
+            first.add_bytes(root_request, 2048)
+            first.finish(root_request, 200)
+            config_request = first.begin(
+                "GET", "/config.json", "192.0.2.40", "00:11:22:33:44:55"
+            )
+            first.add_bytes(config_request, 128)
+            first.finish(config_request, 200)
+            original = first.snapshot()
+
+            restarted = config_server.StatusMonitor(state_file=str(state_file))
+            restored = restarted.snapshot()
+
+        self.assertEqual(original["history_started_at"], restored["history_started_at"])
+        self.assertEqual(2, restored["totals"]["requests"])
+        self.assertEqual(2, restored["totals"]["successful_requests"])
+        self.assertEqual(1, restored["totals"]["boots"])
+        self.assertEqual(2176, restored["totals"]["bytes_sent"])
+        self.assertEqual(2, restored["totals"]["server_starts"])
+        self.assertEqual("00:11:22:33:44:55", restored["recent_clients"][0]["mac"])
+        self.assertEqual("ok", restored["persistence"]["status"])
+
+    def test_inflight_request_is_recovered_as_interrupted_after_crash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory, "http-status.json")
+            first = config_server.StatusMonitor(state_file=str(state_file))
+            first.begin(
+                "GET", "/thinclient/full/filesystem.squashfs", "192.0.2.50"
+            )
+
+            restarted = config_server.StatusMonitor(state_file=str(state_file))
+            restored = restarted.snapshot()
+
+        self.assertEqual(0, restored["totals"]["active_transfers"])
+        self.assertEqual(1, restored["totals"]["failed_requests"])
+        self.assertEqual(1, restored["totals"]["recovered_interrupted_requests"])
+        self.assertEqual(0, restored["totals"]["boots"])
+        recovered = restored["recent_requests"][0]
+        self.assertTrue(recovered["interrupted"])
+        self.assertTrue(recovered["recovered_after_restart"])
+        self.assertEqual(0, recovered["status"])
+
+    def test_persistence_failure_degrades_health_without_stopping_monitor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            blocker = Path(directory, "not-a-directory")
+            blocker.write_text("file", encoding="utf-8")
+            monitor = config_server.StatusMonitor(
+                state_file=str(blocker / "http-status.json")
+            )
+            persistence = monitor.persistence_report()
+            health = config_server.health_report(directory, persistence)
+
+        self.assertEqual("error", persistence["status"])
+        self.assertEqual("degraded", health["status"])
+        self.assertTrue(health["problems"])
+
+    def test_invalid_state_is_preserved_and_replaced_with_clean_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory, "http-status.json")
+            state_file.write_text("not json", encoding="utf-8")
+            warnings = io.StringIO()
+            with contextlib.redirect_stderr(warnings):
+                monitor = config_server.StatusMonitor(state_file=str(state_file))
+
+            backups = list(Path(directory).glob("http-status.json.corrupt-*"))
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(1, len(backups))
+        self.assertIn("invalid HTTP status state", warnings.getvalue())
+        self.assertEqual(config_server.StatusMonitor.STATE_VERSION, state["version"])
+        self.assertEqual("ok", monitor.persistence_report()["status"])
+
+    def test_concurrent_updates_leave_restartable_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory, "http-status.json")
+            monitor = config_server.StatusMonitor(state_file=str(state_file))
+
+            def complete_request(index):
+                request_id = monitor.begin(
+                    "GET", "/thinclient/lite/vmlinuz", "192.0.2.%d" % (index + 1)
+                )
+                monitor.add_bytes(request_id, 4096)
+                monitor.finish(request_id, 200)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+                list(executor.map(complete_request, range(64)))
+
+            restarted = config_server.StatusMonitor(state_file=str(state_file))
+            restored = restarted.snapshot()
+
+        self.assertEqual(64, restored["totals"]["requests"])
+        self.assertEqual(64, restored["totals"]["successful_requests"])
+        self.assertEqual(64 * 4096, restored["totals"]["bytes_sent"])
+        self.assertEqual(64, restored["totals"]["clients"])
+        self.assertEqual(0, restored["totals"]["recovered_interrupted_requests"])
 
 
 if __name__ == "__main__":

@@ -18,7 +18,9 @@ RUN apt-get update \
 COPY tools/tc-config-server.py /usr/local/lib/thinclient/tc-config-server.py
 COPY deploy/docker-pxe/container-entrypoint.sh /usr/local/bin/thinclient-pxe-entrypoint
 
-RUN chmod 0555 \
+RUN install --directory --owner=65534 --group=65534 --mode=0750 \
+        /var/lib/thinclient \
+    && chmod 0555 \
         /usr/local/lib/thinclient/tc-config-server.py \
         /usr/local/bin/thinclient-pxe-entrypoint
 

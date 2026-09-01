@@ -7,6 +7,11 @@ x-pxe-image: &pxe-image
     dockerfile: deploy/docker-pxe/Dockerfile
   network_mode: host
   restart: unless-stopped
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "3"
   init: true
   read_only: true
   security_opt:
@@ -34,6 +39,15 @@ services:
     environment:
       HTTP_BIND: ${PXE_LISTEN:-0.0.0.0}
       HTTP_PORT: ${HTTP_PORT:-8080}
+      STATUS_STATE_FILE: /var/lib/thinclient/http-status.json
+    volumes:
+      - type: bind
+        source: ${PXE_ROOT:-../../out/pxe}
+        target: /srv/pxe
+        read_only: true
+      - type: volume
+        source: status-data
+        target: /var/lib/thinclient
     tmpfs:
       - /tmp
     healthcheck:
@@ -41,10 +55,25 @@ services:
         - CMD
         - python3
         - -c
-        - >-
-          import urllib.request;
-          urllib.request.urlopen('http://${PXE_LISTEN:-127.0.0.1}:${HTTP_PORT:-8080}/config.json', timeout=3).read(1)
+        - |
+          import urllib.error
+          import urllib.request
+          try:
+              urllib.request.urlopen(
+                  'http://${PXE_LISTEN:-127.0.0.1}:${HTTP_PORT:-8080}/healthz',
+                  timeout=3,
+              ).read(1)
+          except urllib.error.HTTPError as error:
+              if error.code != 404:
+                  raise
+              urllib.request.urlopen(
+                  'http://${PXE_LISTEN:-127.0.0.1}:${HTTP_PORT:-8080}/config.json',
+                  timeout=3,
+              ).read(1)
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+volumes:
+  status-data:
