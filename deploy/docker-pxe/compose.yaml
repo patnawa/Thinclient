@@ -40,6 +40,7 @@ services:
       HTTP_BIND: ${PXE_LISTEN:-0.0.0.0}
       HTTP_PORT: ${HTTP_PORT:-8080}
       STATUS_STATE_FILE: /var/lib/thinclient/http-status.json
+      STATUS_TIMEZONE: ${STATUS_TIMEZONE:-UTC}
     volumes:
       - type: bind
         source: ${PXE_ROOT:-../../out/pxe}

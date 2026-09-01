@@ -23,6 +23,11 @@ REPO=$(CDPATH= cd -- "$HERE/../.." && pwd)
 HTTP_HOST=$1
 HTTP_PORT=${2:-8080}
 PXE_ROOT=${3:-"$REPO/out/pxe"}
+STATUS_TIMEZONE=${STATUS_TIMEZONE:-}
+if [ -z "$STATUS_TIMEZONE" ] && [ -r /etc/timezone ]; then
+    STATUS_TIMEZONE=$(sed -n '1p' /etc/timezone)
+fi
+STATUS_TIMEZONE=${STATUS_TIMEZONE:-UTC}
 USE_PREBUILT=0
 if [ -n "${PXE_IMAGE:-}" ]; then
     USE_PREBUILT=1
@@ -44,6 +49,11 @@ esac
 case "$PXE_IMAGE" in
     *[!A-Za-z0-9._/@:-]* | "")
         die "PXE_IMAGE contains unsupported characters"
+        ;;
+esac
+case "$STATUS_TIMEZONE" in
+    *[!A-Za-z0-9_+./-]* | "")
+        die "STATUS_TIMEZONE must be an IANA timezone name such as Asia/Bangkok"
         ;;
 esac
 
@@ -72,8 +82,9 @@ if find "$PXE_ROOT" -type f ! -perm -004 -print -quit | grep -q .; then
     die "some PXE files are not world-readable; run: chmod -R a+rX '$PXE_ROOT'"
 fi
 
-printf 'PXE_ROOT=%s\nPXE_LISTEN=%s\nHTTP_PORT=%s\nPXE_IMAGE=%s\n' \
-    "$PXE_ROOT" "$HTTP_HOST" "$HTTP_PORT" "$PXE_IMAGE" > "$HERE/.env"
+printf 'PXE_ROOT=%s\nPXE_LISTEN=%s\nHTTP_PORT=%s\nPXE_IMAGE=%s\nSTATUS_TIMEZONE=%s\n' \
+    "$PXE_ROOT" "$HTTP_HOST" "$HTTP_PORT" "$PXE_IMAGE" \
+    "$STATUS_TIMEZONE" > "$HERE/.env"
 
 if [ "$USE_PREBUILT" -eq 1 ]; then
     docker compose \
@@ -98,6 +109,7 @@ printf '\nThinClient PXE services started.\n'
 printf '  TFTP next-server: %s\n' "$HTTP_HOST"
 printf '  HTTP root:        http://%s:%s/\n' "$HTTP_HOST" "$HTTP_PORT"
 printf '  HTTP monitor:     http://%s:%s/status\n' "$HTTP_HOST" "$HTTP_PORT"
+printf '  Status timezone:  %s\n' "$STATUS_TIMEZONE"
 printf '  Container image:  %s (%s)\n' "$PXE_IMAGE" \
     "$( [ "$USE_PREBUILT" -eq 1 ] && printf pulled || printf locally-built )"
 printf '  Status:           docker compose -f %s/compose.yaml ps\n' "$HERE"

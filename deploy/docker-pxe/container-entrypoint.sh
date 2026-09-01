@@ -68,7 +68,8 @@ case "${1:-}" in
             --root "$PXE_ROOT" \
             --bind "${HTTP_BIND:-0.0.0.0}" \
             --port "${HTTP_PORT:-8080}" \
-            --state-file "${STATUS_STATE_FILE:-/var/lib/thinclient/http-status.json}"
+            --state-file "${STATUS_STATE_FILE:-/var/lib/thinclient/http-status.json}" \
+            --status-timezone "${STATUS_TIMEZONE:-UTC}"
         ;;
     "")
         die "select a service: tftp or http"

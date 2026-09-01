@@ -12,6 +12,8 @@
 - Capped each PXE container's Docker logs at three rotating 10 MiB files using
   the efficient `local` driver, preventing unattended access logs from filling
   the host filesystem while retaining normal `docker logs` operation.
+- Made human dashboard timestamps follow the deployment's IANA timezone (for
+  example, `Asia/Bangkok`) while retaining UTC timestamps in the JSON API.
 
 ## 1.4.1 — 2026-08-25
 

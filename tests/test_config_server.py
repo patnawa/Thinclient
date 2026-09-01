@@ -2,6 +2,7 @@
 
 import contextlib
 import concurrent.futures
+import datetime
 import http.client
 import importlib.util
 import io
@@ -80,6 +81,24 @@ class ConfigurationSummary(unittest.TestCase):
 
 
 @unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
+class StatusTimestampFormatting(unittest.TestCase):
+    def test_utc_timestamp_is_rendered_in_bangkok_time(self):
+        bangkok = datetime.timezone(datetime.timedelta(hours=7))
+
+        rendered = config_server.format_status_timestamp(
+            "2026-09-01T09:58:49Z", bangkok
+        )
+
+        self.assertEqual("2026-09-01 16:58:49+07:00", rendered)
+
+    def test_json_timestamp_formatter_remains_utc(self):
+        self.assertEqual(
+            "2026-09-01T09:58:49Z",
+            config_server.utc_timestamp(1788256729),
+        )
+
+
+@unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
 class ConfigServerHttp(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -94,6 +113,10 @@ class ConfigServerHttp(unittest.TestCase):
             {
                 "root": str(self.root),
                 "status_monitor": config_server.StatusMonitor(),
+                "status_timezone": datetime.timezone(
+                    datetime.timedelta(hours=7)
+                ),
+                "status_timezone_name": "Asia/Bangkok",
                 "log_message": lambda *_args: None,
             },
         )
@@ -259,6 +282,9 @@ class ConfigServerHttp(unittest.TestCase):
         self.assertTrue(headers["Content-Type"].startswith("text/html"))
         self.assertIn(b"ThinClient PXE HTTP", body)
         self.assertIn(b"/status.json", body)
+        self.assertIn(b"timezone Asia/Bangkok", body)
+        self.assertIn(b"Updated ", body)
+        self.assertIn(b"+07:00 (Asia/Bangkok)", body)
         self.assertEqual(200, head_status)
         self.assertEqual(b"", head_body)
         self.assertGreater(int(head_headers["Content-Length"]), 0)

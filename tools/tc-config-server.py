@@ -39,6 +39,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zoneinfo
 
 CONFIG_NAME = "config.json"
 MAC_RE = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z", re.IGNORECASE)
@@ -53,6 +54,30 @@ def utc_timestamp(timestamp):
     return datetime.datetime.fromtimestamp(
         timestamp, datetime.timezone.utc
     ).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def resolve_status_timezone(name):
+    """Resolve an IANA timezone name used only by the human status page."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("status timezone must be a non-empty IANA name")
+    name = name.strip()
+    if name in ("UTC", "Etc/UTC"):
+        return datetime.timezone.utc
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except (ValueError, zoneinfo.ZoneInfoNotFoundError) as exc:
+        raise ValueError("unknown status timezone: %s" % name) from exc
+
+
+def format_status_timestamp(value, timezone):
+    """Convert an RFC 3339 timestamp to the dashboard's display timezone."""
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return str(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(timezone).isoformat(sep=" ", timespec="seconds")
 
 
 def request_profile(path):
@@ -632,9 +657,11 @@ def format_bytes(value):
         amount /= 1024
 
 
-def status_html(snapshot):
+def status_html(snapshot, display_timezone=datetime.timezone.utc,
+                display_timezone_name="UTC"):
     """Render the dependency-free, auto-refreshing status dashboard."""
     escape = lambda value: html.escape(str(value if value is not None else "-"))
+    display_time = lambda value: format_status_timestamp(value, display_timezone)
     totals = snapshot["totals"]
     health = snapshot["health"]
     health_class = "ok" if health["status"] == "ok" else "degraded"
@@ -666,7 +693,8 @@ def status_html(snapshot):
             "<tr><td><code>%s</code></td><td>%s</td><td>%s</td><td>%s</td>"
             "<td>%s</td><td>%s</td><td><code>%s</code></td></tr>" % (
                 escape(client["mac"]), escape(client["ip"]),
-                escape(client["profile"] or "-"), escape(client["last_seen"]),
+                escape(client["profile"] or "-"),
+                escape(display_time(client["last_seen"])),
                 escape(client["requests"]), escape(client["boots"]),
                 escape(client["last_path"]),
             )
@@ -687,7 +715,8 @@ def status_html(snapshot):
         request_rows.append(
             "<tr><td>%s</td><td>%s</td><td><code>%s</code></td>"
             "<td><span class=\"%s\">%s</span></td><td>%s</td><td>%.2fs</td></tr>" % (
-                escape(request["finished_at"]), escape(request["ip"]),
+                escape(display_time(request["finished_at"])),
+                escape(request["ip"]),
                 escape(request["path"]), status_class, escape(status_label),
                 escape(format_bytes(request["bytes_sent"])),
                 request["duration_seconds"],
@@ -746,7 +775,7 @@ footer { color:var(--muted); margin-top:16px; font-size:12px; }
 </style>
 </head>
 <body><main>
-<header><div><h1>ThinClient PXE HTTP</h1><p>Service up since %s · retained history since %s</p></div>
+<header><div><h1>ThinClient PXE HTTP</h1><p>Service up since %s · retained history since %s · timezone %s</p></div>
 <div class="badge %s">%s</div></header>
 %s
 <section class="cards">
@@ -760,20 +789,24 @@ footer { color:var(--muted); margin-top:16px; font-size:12px; }
 <thead><tr><th>IP address</th><th>MAC</th><th>Path</th><th>Method</th><th>Progress</th><th>Elapsed</th></tr></thead>
 <tbody>%s</tbody></table></div></section>
 <section class="panel"><h2>Recently seen clients</h2><div class="table-wrap"><table>
-<thead><tr><th>MAC</th><th>IP address</th><th>Profile</th><th>Last seen (UTC)</th><th>Requests</th><th>Root downloads</th><th>Last path</th></tr></thead>
+<thead><tr><th>MAC</th><th>IP address</th><th>Profile</th><th>Last seen (%s)</th><th>Requests</th><th>Root downloads</th><th>Last path</th></tr></thead>
 <tbody>%s</tbody></table></div></section>
 <section class="panel"><h2>Recent requests</h2><div class="table-wrap"><table>
-<thead><tr><th>Finished (UTC)</th><th>IP address</th><th>Path</th><th>Status</th><th>Sent</th><th>Duration</th></tr></thead>
+<thead><tr><th>Finished (%s)</th><th>IP address</th><th>Path</th><th>Status</th><th>Sent</th><th>Duration</th></tr></thead>
 <tbody>%s</tbody></table></div></section>
-<footer>Updated %s · refreshes every 10 seconds · persistent state: %s · service starts: %s · <a href="/status.json">JSON status</a></footer>
+<footer>Updated %s (%s) · refreshes every 10 seconds · persistent state: %s · service starts: %s · <a href="/status.json">JSON status</a></footer>
 </main></body></html>
 """) % (
-        escape(snapshot["started_at"]), escape(snapshot["history_started_at"]),
-        health_class, escape(health["status"]), missing,
+        escape(display_time(snapshot["started_at"])),
+        escape(display_time(snapshot["history_started_at"])),
+        escape(display_timezone_name), health_class,
+        escape(health["status"]), missing,
         totals["active_transfers"], totals["clients"], totals["boots"],
         totals["requests"], escape(format_bytes(totals["bytes_sent"])),
-        "".join(active_rows), "".join(client_rows), "".join(request_rows),
-        escape(snapshot["generated_at"]), escape(snapshot["persistence"]["status"]),
+        "".join(active_rows), escape(display_timezone_name),
+        "".join(client_rows), escape(display_timezone_name),
+        "".join(request_rows), escape(display_time(snapshot["generated_at"])),
+        escape(display_timezone_name), escape(snapshot["persistence"]["status"]),
         escape(totals["server_starts"]),
     )
 
@@ -781,6 +814,8 @@ footer { color:var(--muted); margin-top:16px; font-size:12px; }
 class Handler(http.server.SimpleHTTPRequestHandler):
     root = "."
     status_monitor = StatusMonitor()
+    status_timezone = datetime.timezone.utc
+    status_timezone_name = "UTC"
 
     @staticmethod
     def _decoded_url_path(path):
@@ -943,7 +978,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         else:
             self._send_monitor_response(
                 200, "text/html; charset=utf-8",
-                status_html(self._status_snapshot()), head_only,
+                status_html(
+                    self._status_snapshot(), self.status_timezone,
+                    self.status_timezone_name,
+                ), head_only,
             )
         return True
 
@@ -1047,18 +1085,29 @@ def main():
         "--state-file",
         help="persist bounded HTTP status history to this crash-safe JSON file",
     )
+    parser.add_argument(
+        "--status-timezone", default="UTC",
+        help="IANA timezone for the HTML status page (default: UTC)",
+    )
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):
         sys.exit("no such directory: %s" % root)
+    try:
+        status_timezone = resolve_status_timezone(args.status_timezone)
+    except ValueError as exc:
+        parser.error(str(exc))
     Handler.root = root
     Handler.status_monitor = StatusMonitor(state_file=args.state_file)
+    Handler.status_timezone = status_timezone
+    Handler.status_timezone_name = args.status_timezone.strip()
 
     config = os.path.join(root, CONFIG_NAME)
     print("serving %s on port %d" % (root, args.port))
     if args.state_file:
         print("  persistent status -> %s" % os.path.abspath(args.state_file))
+    print("  status timezone -> %s" % Handler.status_timezone_name)
     if os.path.isfile(config):
         try:
             with open(config, encoding="utf-8") as handle:

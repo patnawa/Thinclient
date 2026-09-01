@@ -13,6 +13,7 @@ RUN apt-get update \
         ca-certificates \
         python3 \
         tftpd-hpa \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY tools/tc-config-server.py /usr/local/lib/thinclient/tc-config-server.py

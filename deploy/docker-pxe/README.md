@@ -103,7 +103,8 @@ The helper performs four operations:
    The menu identifies this default as **Lite Auto Cache - restart-safe
    (recommended)** and retains the HTTP fast path as its automatic fallback.
 3. Records the absolute PXE path, listen address, and HTTP port in an ignored
-   `.env` file.
+   `.env` file. It also reads `/etc/timezone` for the dashboard display zone;
+   override this with `STATUS_TIMEZONE=Asia/Bangkok` when needed.
 4. Builds and starts read-only TFTP and HTTP containers with automatic restart.
 
 If `ufw` is enabled, permit only the PXE client subnet:
@@ -174,6 +175,11 @@ that command unless you deliberately want to erase the retained history.
 Status requests and Docker health probes are excluded from the counters. The
 page exposes client IP and MAC addresses, so keep port 8080 restricted to
 trusted LAN/VLAN networks and never publish it to the WAN.
+
+Dashboard timestamps use the IANA timezone recorded as `STATUS_TIMEZONE` in
+the deployment `.env` file. For example, `Asia/Bangkok` displays recent client,
+request, and update times at UTC+07:00. The JSON API continues to return RFC
+3339 UTC timestamps ending in `Z`, which avoids ambiguity for integrations.
 
 Both PXE containers use Docker's rotating `local` log driver. Each container
 keeps at most three 10 MiB log files, limiting combined PXE container logs to
