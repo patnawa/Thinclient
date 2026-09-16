@@ -68,12 +68,16 @@ sudo docker build \
 ```
 
 The normal `deploy.sh` command performs this local build automatically. A
-stable 1.5.0 image is also available from GitHub Container Registry (the local
-1.5.1 development candidate is not published):
+stable 1.5.0 image is also available from GitHub Container Registry:
 
 ```bash
 sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.5.0
 ```
+
+The 1.5.1 prerelease server is available as `:1.5.1`. The publication workflow
+also updates `:latest`, including for prereleases, so use a numbered tag when
+retaining a particular version. The 1.5.1 [validation report](../../docs/1.5.1-VALIDATION.md)
+separates generic ISO tests, signed site-image tests and live-server checks.
 
 Publishing is automated by `.github/workflows/publish-container.yml` whenever
 a GitHub release is published. It also supports a manual workflow run and

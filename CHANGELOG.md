@@ -1,6 +1,6 @@
 # ThinClient changelog
 
-## 1.5.1 — unreleased
+## 1.5.1 — 2026-09-16 (prerelease)
 
 - Check installation payloads, tools and configuration before erasing a disk;
   revalidate the target, verify copied boot files, and fail on bootloader,

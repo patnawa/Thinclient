@@ -1,8 +1,10 @@
 # Hardware and performance validation
 
-1.5.1 is a development candidate. Do not replace a live image merely because it
-builds or passes a VM test. Keep immutable current/previous trees and use a
-non-critical, explicitly selected physical client before fleet promotion.
+1.5.1 is a published prerelease. The default rollout recommendation is to keep
+immutable current/previous trees and test a non-critical, explicitly selected
+physical client before fleet promotion. The site operator explicitly approved
+1.5.1 promotion after the complete VM gates; that exception is recorded in the
+[validation report](1.5.1-VALIDATION.md) and does not certify physical hardware.
 
 ## Fleet target and test priority
 
@@ -10,6 +12,9 @@ User-specified target: Dell and HP PCs with 2–4 GB RAM, Gen3–Gen10. For plan
 interpret the generations as Intel Core CPU generations, not Dell/HP product
 generation numbers. Exact model names, NICs and storage controllers are still
 unknown; record them from each machine rather than inferring them from its age.
+The operator reports that these PCs already work with previous project versions.
+Treat that working fleet as the regression baseline, not as previously unsupported
+hardware. The aim is to preserve compatibility while improving reliability.
 
 Prioritize physical testing in this order, including both vendors:
 

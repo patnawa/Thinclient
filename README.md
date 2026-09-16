@@ -62,6 +62,12 @@ Download the [1.5.0 release ISOs and SHA-256 checksums](https://github.com/patna
 Public images contain factory defaults, not a site's configuration or signing keys.
 Configure your server address and administrator password before deployment.
 
+The [1.5.1 reliability prerelease](https://github.com/patnawa/Thinclient/releases/tag/v1.5.1)
+also provides Lite/Full ISOs and checksums. It improves installer safety, UI
+responsiveness and cache/server behavior; it does not establish broader physical
+compatibility than an already-working 1.5.0 fleet. See the
+[validation and rollout results](docs/1.5.1-VALIDATION.md).
+
 On Debian or Ubuntu (including Debian under WSL2):
 
 ```bash
