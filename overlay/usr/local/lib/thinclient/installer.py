@@ -18,6 +18,7 @@ import threading  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from uicommon import CSS  # noqa: E402
+from uijobs import BackgroundJob  # noqa: E402
 
 INSTALLER = "/usr/local/sbin/tc-install"
 
@@ -32,6 +33,8 @@ class Installer(Gtk.Window):
         self.fullscreen()
         self.running = False
         self.idle_controls = []
+        self._disk_job = BackgroundJob(GLib.idle_add)
+        self.connect("destroy", lambda *_: self._disk_job.close())
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.add(outer)
@@ -97,16 +100,29 @@ class Installer(Gtk.Window):
 
     # ------------------------------------------------------------ disks ----
     def load_disks(self):
+        if self.running or self._disk_job.busy:
+            return
+        self.install_btn.set_sensitive(False)
+        self.status.set_text("Checking available disks…")
+        self._disk_job.start(self._read_disks, self._show_disks)
+
+    @staticmethod
+    def _read_disks():
+        import json
+        output = subprocess.run([INSTALLER, "--list"], capture_output=True,
+                                text=True, timeout=30)
+        if output.returncode != 0:
+            raise RuntimeError("disk listing failed")
+        found = json.loads(output.stdout)
+        if not isinstance(found, list):
+            raise ValueError("invalid disk listing")
+        return found
+
+    def _show_disks(self, found, error):
         for child in self.disks.get_children():
             self.disks.remove(child)
-
-        try:
-            import json
-            output = subprocess.run([INSTALLER, "--list"], capture_output=True,
-                                    text=True, timeout=30)
-            found = json.loads(output.stdout) if output.returncode == 0 else []
-        except (OSError, subprocess.SubprocessError, ValueError):
-            found = []
+        found = found or []
+        self.status.set_text(error or "Select a disk. Its contents will be erased only after confirmation.")
 
         if not found:
             row = Gtk.ListBoxRow(activatable=False, selectable=False)

@@ -180,6 +180,7 @@ fi
 if [ -n "$TRUST_POLICY_FILE" ]; then
     install -m0644 "$TRUST_POLICY_FILE" "$ROOTFS/etc/thinclient/policy.json"
 fi
+bash "$SCRIPT_DIR/reset-trust.sh" "$ROOTFS"
 if [ -n "$CONFIG_SIGNING_KEY" ]; then
     openssl pkey -in "$CONFIG_SIGNING_KEY" -pubout -out "$ROOTFS/etc/thinclient/config.pub"
 elif [ -n "$CONFIG_PUBLIC_KEY_FILE" ]; then

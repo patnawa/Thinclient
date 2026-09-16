@@ -29,7 +29,7 @@ rm -f "$MON"
 pkill -f 'qemu-system-x86_64.*tc-qemu-monitor' 2>/dev/null; sleep 1
 
 ACCEL=()
-[ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host) && echo "using KVM"
+[ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu "${TC_TEST_CPU:-host}") && echo "using KVM"
 
 FIRMWARE=()
 if [ "$MODE" = "uefi" ] || [ "$MODE" = "secureboot" ]; then
@@ -64,20 +64,24 @@ if [ "$MODE" = "debug" ]; then
 fi
 
 echo "booting $(basename "$ISO") in $MODE mode..."
+BOOT_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
 qemu-system-x86_64 \
     "${ACCEL[@]}" "${FIRMWARE[@]}" "${DIRECT[@]}" \
-    -m 2560 -smp 4 \
+    -m "${TC_TEST_RAM_MB:-2560}" -smp "${TC_TEST_CPUS:-4}" \
     -device virtio-serial-pci \
     -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
     -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -cdrom "$ISO" -boot d \
-    -vga std \
-    -netdev user,id=net0 -device e1000,netdev=net0 \
+    -vga "${TC_TEST_VGA:-std}" \
+    -netdev user,id=net0 -device "${TC_TEST_NIC:-e1000},netdev=net0" \
     -display none \
     -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/serial.log" \
     > "$OUT/qemu.log" 2>&1 &
 QEMU=$!
+python3 "$REPO/tools/boot-timer.py" "$OUT/ready.jsonl" --started "$BOOT_STARTED" \
+    --output "$OUT/boot-timing.json" > "$OUT/timer.log" 2>&1 &
+BOOT_TIMER=$!
 
 cat > /tmp/tc-mon.py <<'PYEOF'
 import socket, sys, time
@@ -125,6 +129,8 @@ done
 
 echo
 echo "shutting down"
+kill "$BOOT_TIMER" 2>/dev/null || true
+wait "$BOOT_TIMER" 2>/dev/null || true
 python3 /tmp/tc-mon.py "$MON" "quit" >/dev/null 2>&1
 sleep 2
 kill -9 "$QEMU" 2>/dev/null

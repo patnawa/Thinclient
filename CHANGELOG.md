@@ -1,5 +1,20 @@
 # ThinClient changelog
 
+## 1.5.1 — unreleased
+
+- Check installation payloads, tools and configuration before erasing a disk;
+  revalidate the target, verify copied boot files, and fail on bootloader,
+  configuration or unmount errors.
+- Move network changes, Wi-Fi scans, diagnostics, display discovery and installer
+  disk scans off the GTK thread; ignore callbacks after a dialog closes.
+- Include MMC/eMMC and SDHCI storage drivers in Lite's early boot image, expand
+  hardware inventory, and add configurable RAM, NIC and storage test profiles.
+- Skip cache-discovery retry sleeps when USB storage is absent and udev is settled;
+  retain bounded discovery for late devices and a controller-compatibility override.
+- Clear stale build trust keys, signatures and release approvals on rebuild.
+- Bound HTTP workers and keep durable status writes off the transfer-progress
+  lock, with overload metrics, checksum-verified load tests and VM boot timing.
+
 ## 1.5.0 — 2026-09-16
 
 - Reject failed, truncated, interrupted, and unflushed USB-cache writes; verify

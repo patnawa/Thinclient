@@ -187,7 +187,7 @@ if [ "${INITRAMFS_MODULES:-most}" = "list" ]; then
   : > /etc/initramfs-tools/modules
   # The Lite PXE profile also publishes an ISO and an internal-disk installer.
   # MODULES=list must retain their storage controllers and media filesystems.
-  for module in ${INITRAMFS_NET_MODULES:-} ata_piix ahci nvme virtio_blk virtio_scsi sr_mod sd_mod isofs ext4 vfat; do
+  for module in ${INITRAMFS_NET_MODULES:-} ata_piix ahci nvme vmd mmc_block sdhci_pci sdhci_acpi virtio_blk virtio_scsi sr_mod sd_mod isofs ext4 vfat; do
     modinfo -k "$KMOD_VERSION" "$module" >/dev/null 2>&1 \
       || { echo "FATAL: requested initramfs module is unavailable: $module" >&2; exit 1; }
     echo "$module" >> /etc/initramfs-tools/modules

@@ -25,6 +25,24 @@ canary = module("canary", "prepare-canary.py")
 
 
 class ReleaseTools(unittest.TestCase):
+    def test_rebuild_drops_old_signature_and_approval(self):
+        for name in ("vmlinuz", "initrd.img", "filesystem.squashfs", "manifest.sha256.sig", "verification.json"):
+            (self.root / name).write_text("old")
+        subprocess.run([sys.executable, str(REPO / "tools/release-manifest.py"), "create", str(self.root)],
+                       check=True, capture_output=True)
+        self.assertFalse((self.root / "manifest.sha256.sig").exists())
+        self.assertFalse((self.root / "verification.json").exists())
+
+    @unittest.skipUnless(shutil.which("bash"), "requires bash")
+    def test_reused_build_drops_derived_keys_but_preserves_config(self):
+        rootfs = self.root / "rootfs"
+        settings = rootfs / "etc/thinclient"
+        settings.mkdir(parents=True)
+        for name in ("config.pub", "release.pub", "config.json", "policy.json"):
+            (settings / name).write_text("previous")
+        subprocess.run(["bash", str(REPO / "build/reset-trust.sh"), str(rootfs)], check=True)
+        self.assertEqual(["config.json", "policy.json"], sorted(item.name for item in settings.iterdir()))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

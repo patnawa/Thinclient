@@ -68,6 +68,7 @@ case "${1:-}" in
             --root "$PXE_ROOT" \
             --bind "${HTTP_BIND:-0.0.0.0}" \
             --port "${HTTP_PORT:-8080}" \
+            --max-workers "${HTTP_MAX_WORKERS:-128}" \
             --state-file "${STATUS_STATE_FILE:-/var/lib/thinclient/http-status.json}" \
             --status-timezone "${STATUS_TIMEZONE:-UTC}"
         ;;

@@ -19,6 +19,7 @@ Layout written to the target disk (GPT, bootable on both BIOS and UEFI):
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,16 +37,20 @@ ESP_LABEL = "THINBOOT"
 CONFIG_LABEL = "TCCONF"
 ESP_SIZE_MIB = 1024
 MIN_DISK_BYTES = 4 * 1024 ** 3
+SYSTEM_FILES = ("vmlinuz", "initrd.img", "filesystem.squashfs")
 
 
 class InstallError(RuntimeError):
     pass
 
 
-def run(argv, check=True, quiet=False):
+def run(argv, check=True, quiet=False, timeout=120):
     if not quiet:
         print("  $ %s" % " ".join(argv))
-    result = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise InstallError("%s could not complete: %s" % (argv[0], exc)) from exc
     if check and result.returncode != 0:
         raise InstallError("%s failed: %s" % (argv[0], (result.stderr or result.stdout).strip()))
     return result
@@ -145,6 +150,43 @@ def validate_target(target):
 
 
 # ---------------------------------------------------------------- install ----
+def file_hash(path):
+    with open(path, "rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def preflight():
+    """Read every required source and check tools before any disk is erased."""
+    for tool in ("wipefs", "sgdisk", "partprobe", "udevadm", "blockdev",
+                 "mkfs.vfat", "mount", "umount", "grub-install", "sync"):
+        if shutil.which(tool) is None:
+            raise InstallError("required installation tool is missing: %s" % tool)
+    for platform in ("i386-pc", "x86_64-efi"):
+        if not os.path.isdir("/usr/lib/grub/" + platform):
+            raise InstallError("required GRUB platform is missing: %s" % platform)
+    expected = {}
+    total = 0
+    try:
+        for name in SYSTEM_FILES:
+            path = os.path.join(LIVE_MEDIUM, "live", name)
+            if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                raise InstallError("installation source is missing or empty: %s" % name)
+            total += os.path.getsize(path)
+            expected[name] = file_hash(path)
+    except OSError as exc:
+        raise InstallError("cannot read the installation source: %s" % exc) from exc
+    # Reserve space for both GRUB platforms and filesystem overhead.
+    if total > (ESP_SIZE_MIB - 128) * 1024 ** 2:
+        raise InstallError("installation source will not fit the boot partition")
+    import tcconfig
+    try:
+        cfg = tcconfig.load()
+        json.dumps({"schema": 1, "device": cfg["device"], "connections": cfg["connections"]})
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise InstallError("cannot read the configuration before installation") from exc
+    return expected, cfg
+
+
 def partition(target):
     print("partitioning %s" % target)
     run(["wipefs", "-a", target])
@@ -184,10 +226,10 @@ def format_partitions(target):
     run(["mkfs.vfat", "-F", "32", "-n", CONFIG_LABEL, part_path(target, 3)])
 
 
-def copy_system(target, mountpoint):
+def copy_system(target, mountpoint, expected):
     print("copying the system")
     os.makedirs(os.path.join(mountpoint, "live"), exist_ok=True)
-    for name in ("vmlinuz", "initrd.img", "filesystem.squashfs"):
+    for name in SYSTEM_FILES:
         source = os.path.join(LIVE_MEDIUM, "live", name)
         if not os.path.exists(source):
             raise InstallError("%s is missing from the boot medium" % name)
@@ -195,7 +237,12 @@ def copy_system(target, mountpoint):
         size = os.path.getsize(source)
         print("  %-22s %6.1f MB" % (name, size / 1024 ** 2))
         shutil.copyfile(source, destination)
-    run(["sync"], quiet=True)
+        # Flush before read-back verification. This detects failed/truncated
+        # copies and source changes after preflight, not latent future faults.
+        with open(destination, "rb") as handle:
+            os.fsync(handle.fileno())
+        if file_hash(destination) != expected[name]:
+            raise InstallError("copied %s failed verification" % name)
 
 
 def install_bootloader(target, mountpoint):
@@ -212,7 +259,7 @@ def install_bootloader(target, mountpoint):
     # BIOS, into the 1 MiB bios_grub partition. Machines that only do legacy
     # boot are exactly the ones being repurposed as thin clients.
     run(["grub-install", "--target=i386-pc",
-         "--boot-directory=%s/boot" % mountpoint, "--recheck", target], check=False)
+         "--boot-directory=%s/boot" % mountpoint, "--recheck", target])
 
     cmdline = ("boot=live components union=overlay quiet loglevel=3 "
                "live-media=/dev/disk/by-label/%s" % ESP_LABEL)
@@ -246,7 +293,7 @@ def install_bootloader(target, mountpoint):
         )
 
 
-def seed_config(target):
+def seed_config(target, cfg=None):
     """Put the running configuration on the new TCCONF partition."""
     mountpoint = tempfile.mkdtemp(prefix="tc-install-config-", dir="/run")
     mounted = False
@@ -254,13 +301,18 @@ def seed_config(target):
         run(["mount", part_path(target, 3), mountpoint])
         mounted = True
         import tcconfig
-        cfg = tcconfig.load()
+        cfg = tcconfig.load() if cfg is None else cfg
         payload = json.dumps(
             {"schema": 1, "device": cfg["device"], "connections": cfg["connections"]},
             indent=2,
         )
         with open(os.path.join(mountpoint, "config.json"), "w", encoding="utf-8") as fh:
             fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(os.path.join(mountpoint, "config.json"), encoding="utf-8") as fh:
+            if json.load(fh) != json.loads(payload):
+                raise InstallError("installed configuration failed verification")
         os.makedirs(os.path.join(mountpoint, "ca-certificates"), exist_ok=True)
         support_dir = os.path.join(mountpoint, "support")
         os.makedirs(support_dir, exist_ok=True)
@@ -275,11 +327,11 @@ def seed_config(target):
                 os.path.join(support_dir, "authorized_keys"),
             )
         print("  settings written to the %s partition" % CONFIG_LABEL)
-    except Exception as exc:                       # noqa: BLE001
-        print("  could not seed the configuration: %s" % exc, file=sys.stderr)
+    except (OSError, ValueError, KeyError, TypeError, InstallError) as exc:
+        raise InstallError("could not seed the configuration: %s" % exc) from exc
     finally:
         if mounted:
-            run(["umount", mountpoint], check=False, quiet=True)
+            run(["umount", mountpoint], quiet=True)
         try:
             os.rmdir(mountpoint)
         except OSError:
@@ -288,7 +340,9 @@ def seed_config(target):
 
 def install(target):
     target = validate_target(target)
-
+    expected, cfg = preflight()
+    # Hashing can take time on an old USB stick. Revalidate the target after it.
+    target = validate_target(target)
     partition(target)
     format_partitions(target)
 
@@ -300,17 +354,17 @@ def install(target):
     try:
         run(["mount", part_path(target, 2), mountpoint])
         mounted = True
-        copy_system(target, mountpoint)
+        copy_system(target, mountpoint, expected)
         install_bootloader(target, mountpoint)
     finally:
         if mounted:
-            run(["umount", mountpoint], check=False, quiet=True)
+            run(["umount", mountpoint], quiet=True)
         try:
             os.rmdir(mountpoint)
         except OSError:
             pass
 
-    seed_config(target)
+    seed_config(target, cfg)
     run(["sync"], quiet=True)
     print("installation finished")
 
@@ -347,7 +401,7 @@ def main():
 
     try:
         install(args.target)
-    except InstallError as exc:
+    except (InstallError, OSError) as exc:
         sys.exit("installation failed: %s" % exc)
     return 0
 

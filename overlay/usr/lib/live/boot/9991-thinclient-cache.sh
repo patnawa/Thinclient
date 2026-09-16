@@ -38,8 +38,29 @@ tc_cache_is_usb()
 		| grep -qx 'ID_BUS=usb'
 }
 
+tc_cache_usb_present()
+{
+	# A storage interface is visible before its block node on slow USB media.
+	for interface in /sys/bus/usb/devices/*/bInterfaceClass
+	do
+		[ -f "$interface" ] || continue
+		grep -qx '08' "$interface" && return 0
+	done
+	return 1
+}
+
 tc_cache_devices()
 {
+	# Do not scan every internal disk or sleep five times on diskless clients
+	# without USB storage. An unfinished udev queue or a storage interface keeps
+	# the original bounded discovery window for late-enumerating media. The
+	# explicit wait override remains available for unusual controller firmware.
+	if udevadm settle --timeout=1 2>/dev/null \
+		&& [ "$(tc_cache_arg tc.cache.wait 2>/dev/null || true)" != 1 ] \
+		&& ! tc_cache_usb_present
+	then
+		return 1
+	fi
 	tries=0
 	while [ "$tries" -lt 5 ]
 	do

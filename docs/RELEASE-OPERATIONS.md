@@ -23,9 +23,9 @@ overrides when reproducing a generic build.
 
 ```bash
 RELEASE_SIGNING_KEY=/secure/release.pem CONFIG_SIGNING_KEY=/secure/config.pem \
-  OUTDIR="$PWD/out/release-1.5.0/lite" bash build/build-lite-pxe.sh
+  OUTDIR="$PWD/out/release-1.5.1/lite" bash build/build-lite-pxe.sh
 RELEASE_SIGNING_KEY=/secure/release.pem CONFIG_SIGNING_KEY=/secure/config.pem \
-  OUTDIR="$PWD/out/release-1.5.0/full" bash build/build-full-pxe.sh
+  OUTDIR="$PWD/out/release-1.5.1/full" bash build/build-full-pxe.sh
 TC_TEST_CONFIG_SIGNING_KEY=/secure/config.pem bash build/verify-release.sh
 ```
 
@@ -51,11 +51,11 @@ hand. Rebuilds invalidate earlier receipts.
 
 ```bash
 bash build/merge-pxe-profiles.sh \
-  out/release-1.5.0/full/pxe out/release-1.5.0/lite/pxe out/pxe-dual-1.5.0
-python3 tools/release-manifest.py verify out/pxe-dual-1.5.0/thinclient/lite \
+  out/release-1.5.1/full/pxe out/release-1.5.1/lite/pxe out/pxe-dual-1.5.1
+python3 tools/release-manifest.py verify out/pxe-dual-1.5.1/thinclient/lite \
   --key /secure/release.pub
-bash build/package-deployment.sh out/pxe-dual-1.5.0 /secure/release.pub \
-  out/deployment-1.5.0.tar
+bash build/package-deployment.sh out/pxe-dual-1.5.1 /secure/release.pub \
+  out/deployment-1.5.1.tar
 ```
 
 The packager checks both receipts and signatures before creating a new archive.

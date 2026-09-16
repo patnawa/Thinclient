@@ -48,6 +48,37 @@ def fake_dialog(connection=None):
 
 @unittest.skipUnless(settings is not None, "GTK settings dependencies are not installed")
 class NetworkDialogLifecycle(unittest.TestCase):
+    def test_network_actions_disable_controls_and_restore_them_on_failure(self):
+        dialog = types.SimpleNamespace(
+            _network_job=types.SimpleNamespace(busy=False, closed=False, start=mock.Mock()),
+            _network_controls=[mock.Mock(), mock.Mock()],
+            network_spinner=mock.Mock(), message=mock.Mock())
+        work, complete = mock.Mock(), mock.Mock()
+        settings.NetworkDialog._network_operation(dialog, "Working", work, complete)
+        work.assert_not_called()
+        callback = dialog._network_job.start.call_args.args[1]
+        callback(None, "Timed out")
+        complete.assert_not_called()
+        dialog.message.set_text.assert_called_with("Timed out")
+        for control in dialog._network_controls:
+            self.assertEqual([mock.call(False), mock.call(True)], control.set_sensitive.call_args_list)
+
+    def test_wifi_join_snapshots_inputs_before_the_worker_runs(self):
+        dialog = types.SimpleNamespace(
+            ssid=mock.Mock(), wifi_pass=mock.Mock(), message=mock.Mock(),
+            _nmcli=mock.Mock(return_value=types.SimpleNamespace(returncode=0)),
+            _network_operation=mock.Mock())
+        dialog.ssid.get_child.return_value.get_text.return_value = "Test Wi-Fi"
+        dialog.wifi_pass.get_text.return_value = "temporary-password"
+        settings.NetworkDialog._join_wifi(dialog)
+        dialog._nmcli.assert_not_called()
+        dialog.wifi_pass.set_text.assert_called_once_with("")
+        dialog.ssid.get_child.return_value.get_text.return_value = "Changed"
+        work = dialog._network_operation.call_args.args[1]
+        self.assertEqual("Connected to Test Wi-Fi.", work())
+        dialog._nmcli.assert_called_once_with("device", "wifi", "connect", "Test Wi-Fi",
+                                             "password", "temporary-password", timeout=90)
+
     def test_worker_is_deferred_and_receives_only_a_secret_free_snapshot(self):
         connection = {
             "id": "office",

@@ -65,6 +65,32 @@ class ValidateTarget(unittest.TestCase):
 
 
 class InstallOrdering(unittest.TestCase):
+    def test_missing_source_fails_before_erasing(self):
+        with mock.patch.object(tc_install, "validate_target", return_value="/dev/sda"), \
+                mock.patch.object(tc_install, "preflight", side_effect=tc_install.InstallError("missing source")), \
+                mock.patch.object(tc_install, "partition") as partition:
+            with self.assertRaisesRegex(tc_install.InstallError, "missing source"):
+                tc_install.install("/dev/sda")
+        partition.assert_not_called()
+
+    def test_target_is_revalidated_after_preflight(self):
+        with mock.patch.object(tc_install, "validate_target", side_effect=["/dev/sda", tc_install.InstallError("now mounted")]), \
+                mock.patch.object(tc_install, "preflight", return_value=({}, {})), \
+                mock.patch.object(tc_install, "partition") as partition:
+            with self.assertRaisesRegex(tc_install.InstallError, "now mounted"):
+                tc_install.install("/dev/sda")
+        partition.assert_not_called()
+
+    def test_bios_bootloader_failure_is_required(self):
+        def commands(argv, check=True, **kwargs):
+            if "--target=i386-pc" in argv and check:
+                raise tc_install.InstallError("BIOS failed")
+            return completed()
+        with mock.patch.object(tc_install, "run", side_effect=commands), \
+                mock.patch.object(tc_install.os.path, "exists", return_value=False):
+            with self.assertRaisesRegex(tc_install.InstallError, "BIOS failed"):
+                tc_install.install_bootloader("/dev/sda", "/unused")
+
     def test_partition_waits_for_usable_devices_not_stale_nodes(self):
         probes = []
         def run(arguments, **_kwargs):
@@ -98,6 +124,14 @@ class InstallOrdering(unittest.TestCase):
 
 
 class SeedConfig(unittest.TestCase):
+    def test_configuration_failure_is_fatal(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(tc_install.tempfile, "mkdtemp", return_value=directory), \
+                mock.patch.object(tc_install, "run", side_effect=tc_install.InstallError("mount failed")), \
+                mock.patch.object(tc_install.os, "rmdir"):
+            with self.assertRaisesRegex(tc_install.InstallError, "could not seed"):
+                tc_install.seed_config("/dev/sda", {})
+
     def test_internal_install_carries_public_authorization_not_host_keys(self):
         fake_tcconfig = types.SimpleNamespace(load=lambda: {
             "device": {}, "connections": [],
@@ -116,6 +150,43 @@ class SeedConfig(unittest.TestCase):
             "/run/thinclient-support/user/authorized_keys",
             str(Path(destination) / "support" / "authorized_keys"),
         )
+
+
+class SourceVerification(unittest.TestCase):
+    def test_preflight_rejects_missing_tool(self):
+        with mock.patch.object(tc_install.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(tc_install.InstallError, "tool is missing"):
+                tc_install.preflight()
+
+    def test_preflight_rejects_missing_payload(self):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(tc_install, "LIVE_MEDIUM", directory), \
+                mock.patch.object(tc_install.shutil, "which", return_value="/mock/tool"), \
+                mock.patch.object(tc_install.os.path, "isdir", return_value=True):
+            with self.assertRaisesRegex(tc_install.InstallError, "missing or empty"):
+                tc_install.preflight()
+
+    def test_copy_rejects_changed_payload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "medium" / "live"
+            source.mkdir(parents=True)
+            for name in tc_install.SYSTEM_FILES:
+                (source / name).write_bytes(b"valid bytes")
+            expected = {name: tc_install.file_hash(source / name) for name in tc_install.SYSTEM_FILES}
+            (source / "initrd.img").write_bytes(b"changed bytes")
+            with mock.patch.object(tc_install, "LIVE_MEDIUM", str(source.parent)):
+                with self.assertRaisesRegex(tc_install.InstallError, "initrd.img failed verification"):
+                    tc_install.copy_system("/unused", str(Path(directory) / "target"), expected)
+
+    def test_successful_copy_matches_preflight_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "medium" / "live"
+            source.mkdir(parents=True)
+            for name in tc_install.SYSTEM_FILES:
+                (source / name).write_bytes(name.encode())
+            expected = {name: tc_install.file_hash(source / name) for name in tc_install.SYSTEM_FILES}
+            with mock.patch.object(tc_install, "LIVE_MEDIUM", str(source.parent)):
+                tc_install.copy_system("/unused", str(Path(directory) / "target"), expected)
 
 
 if __name__ == "__main__":

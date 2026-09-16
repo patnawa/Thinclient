@@ -105,6 +105,7 @@ class StatusMonitor:
         self.history_started_at = self.started_at
         self._started_monotonic = time.monotonic()
         self._lock = threading.Lock()
+        self._persistence_lock = threading.Lock()
         self._next_request_id = 1
         self._active = {}
         self._clients = collections.OrderedDict()
@@ -130,8 +131,7 @@ class StatusMonitor:
         if loaded:
             self._server_start_total += 1
         self._recover_interrupted_requests()
-        with self._lock:
-            self._persist_locked()
+        self._persist()
 
     @staticmethod
     def _required_fields(mapping, fields, description):
@@ -314,10 +314,26 @@ class StatusMonitor:
             "active_requests": active,
         }
 
-    def _persist_locked(self):
+    def _persist(self):
+        """Serialize durable commits without blocking transfer-progress updates.
+
+        Snapshot only while holding the state lock; slow JSON/fsync operations
+        use a separate lock. Always acquire persistence before state, never the
+        reverse. begin/finish still wait for their durable commit before return.
+        """
         if not self._state_file:
             return
-        saved_at = time.time()
+        with self._persistence_lock:
+            saved_at = time.time()
+            with self._lock:
+                document = self._state_document_locked(saved_at)
+            error = self._write_state(document)
+            with self._lock:
+                self._persistence_error = error
+                if error is None:
+                    self._last_saved_at = saved_at
+
+    def _write_state(self, document):
         directory = os.path.dirname(self._state_file)
         temporary = self._state_file + ".tmp"
         try:
@@ -327,7 +343,7 @@ class StatusMonitor:
             )
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(
-                    self._state_document_locked(saved_at), handle,
+                    document, handle,
                     separators=(",", ":"), sort_keys=True,
                 )
                 handle.write("\n")
@@ -340,14 +356,13 @@ class StatusMonitor:
                     os.fsync(directory_descriptor)
                 finally:
                     os.close(directory_descriptor)
-            self._last_saved_at = saved_at
-            self._persistence_error = None
+            return None
         except (OSError, TypeError, ValueError) as exc:
-            self._persistence_error = "%s: %s" % (type(exc).__name__, exc)
             try:
                 os.unlink(temporary)
             except OSError:
                 pass
+            return "%s: %s" % (type(exc).__name__, exc)
 
     def _persistence_report_locked(self):
         if not self._state_file:
@@ -455,8 +470,8 @@ class StatusMonitor:
                 "content_length": None,
             }
             self._request_total += 1
-            self._persist_locked()
-            return request_id
+        self._persist()
+        return request_id
 
     def set_content_length(self, request_id, length):
         with self._lock:
@@ -519,7 +534,7 @@ class StatusMonitor:
                 "interrupted": bool(interrupted),
                 "recovered_after_restart": False,
             })
-            self._persist_locked()
+        self._persist()
 
     def snapshot(self):
         """Return a JSON-serialisable point-in-time status snapshot."""
@@ -1276,6 +1291,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.root, snapshot["persistence"]
         )
         snapshot["status"] = snapshot["health"]["status"]
+        snapshot["connections"] = {"limit": self.server.max_workers,
+                                   "rejected_total": self.server.rejected_requests}
         return snapshot
 
     def _send_monitor_response(self, status, content_type, body, head_only):
@@ -1326,6 +1343,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             for name, key, kind in mapping:
                 lines.extend(("# TYPE thinclient_%s %s" % (name, kind),
                               "thinclient_%s %s" % (name, totals[key])))
+            lines.extend(("# TYPE thinclient_rejected_connections_total counter",
+                          "thinclient_rejected_connections_total %d" % self.server.rejected_requests,
+                          "# TYPE thinclient_connection_limit gauge",
+                          "thinclient_connection_limit %d" % self.server.max_workers))
             self._send_monitor_response(200, "text/plain; version=0.0.4; charset=utf-8",
                                         "\n".join(lines) + "\n", head_only)
         elif path == "/status.json":
@@ -1418,6 +1439,41 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
     tls_context = None
 
+    def __init__(self, server_address, handler, bind_and_activate=True, max_workers=128):
+        if not 1 <= max_workers <= 1024:
+            raise ValueError("max_workers must be between 1 and 1024")
+        self._worker_slots = threading.BoundedSemaphore(max_workers)
+        self.max_workers = max_workers
+        self.rejected_requests = 0
+        super().__init__(server_address, handler, bind_and_activate)
+
+    def process_request(self, request, client_address):
+        if not self._worker_slots.acquire(blocking=False):
+            self.rejected_requests += 1
+            try:
+                # Never perform a TLS handshake on the accept thread. Plain
+                # HTTP clients get a short retry response; TLS is closed.
+                if not isinstance(request, ssl.SSLSocket):
+                    request.settimeout(0.1)
+                    request.sendall(b"HTTP/1.1 503 Service Unavailable\r\n"
+                                    b"Retry-After: 2\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
     def get_request(self):
         connection, address = super().get_request()
         connection.settimeout(30)
@@ -1452,6 +1508,8 @@ def main():
                         help="directory to serve (default: out/pxe)")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--max-workers", type=int, default=128,
+                        help="maximum concurrent connections, 1..1024 (default: 128)")
     parser.add_argument("--tls-cert", help="PEM certificate for an HTTPS listener")
     parser.add_argument("--tls-key", help="PEM private key for an HTTPS listener")
     parser.add_argument(
@@ -1515,7 +1573,7 @@ def main():
         print("  status monitor :  http://%s:%d/status" % (address, args.port))
     print("\nCtrl+C to stop\n")
 
-    with Server((args.bind, args.port), Handler) as httpd:
+    with Server((args.bind, args.port), Handler, max_workers=args.max_workers) as httpd:
         if args.tls_cert:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             context.minimum_version = ssl.TLSVersion.TLSv1_2

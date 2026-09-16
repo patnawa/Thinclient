@@ -93,36 +93,47 @@ shoot() {
 }
 
 # --- boot a diskless client over the network --------------------------------
-ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)
+ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu "${TC_TEST_CPU:-host}")
 read -r -a QEMU_EXTRA <<<"${QEMU_EXTRA_ARGS:-}"
 
 FIRMWARE=()
-NET_DEVICE="e1000,netdev=n0,bootindex=0"
+NIC="${TC_TEST_NIC:-e1000}"
+case "$NIC" in
+    e1000) NIC_ROM=efi-e1000.rom ;;
+    rtl8139) NIC_ROM=efi-rtl8139.rom ;;
+    virtio-net-pci) NIC_ROM=efi-virtio.rom ;;
+    *) echo 'TC_TEST_NIC must be e1000, rtl8139 or virtio-net-pci' >&2; exit 2 ;;
+esac
+NET_DEVICE="$NIC,netdev=n0,bootindex=0"
 if [ "$MODE" = "uefi" ]; then
     cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
     FIRMWARE=(-drive "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd"
               -drive "if=pflash,format=raw,file=$OUT/vars.fd")
     # QEMU otherwise attaches the legacy PXE option ROM, which OVMF cannot
     # execute and silently skips before dropping to its internal shell.
-    NET_DEVICE="e1000,netdev=n0,bootindex=0,romfile=efi-e1000.rom"
+    NET_DEVICE="$NIC,netdev=n0,bootindex=0,romfile=$NIC_ROM"
 fi
 
 echo
 echo "network booting a diskless client ($MODE, boot file: $BOOTFILE)"
+BOOT_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
-    -m "${TC_TEST_RAM_MB:-2560}" -smp 4 \
+    -m "${TC_TEST_RAM_MB:-2560}" -smp "${TC_TEST_CPUS:-4}" \
     -device virtio-serial-pci \
     -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
     -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -netdev "user,id=n0,tftp=$PXE,bootfile=$BOOTFILE" \
     -device "$NET_DEVICE" \
     -boot n \
-    -vga std -display none \
+    -vga "${TC_TEST_VGA:-std}" -display none \
     -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/serial.log" \
     "${QEMU_EXTRA[@]}" \
     > "$OUT/qemu.log" 2>&1 &
 QEMU=$!
+python3 "$REPO/tools/boot-timer.py" "$OUT/ready.jsonl" --started "$BOOT_STARTED" \
+    --output "$OUT/boot-timing.json" > "$OUT/timer.log" 2>&1 &
+BOOT_TIMER=$!
 for _ in $(seq 1 30); do [ -S "$MON" ] && break; sleep 1; done
 
 LAST=0; BEST=0
@@ -141,6 +152,8 @@ for T in 20 40 60 90 120; do
     fi
 done
 
+kill "$BOOT_TIMER" 2>/dev/null || true
+wait "$BOOT_TIMER" 2>/dev/null || true
 mon "quit"; sleep 2
 
 # --- what the server was actually asked for ---------------------------------

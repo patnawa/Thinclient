@@ -30,6 +30,9 @@ def main():
     path = root / "manifest.sha256"
     signature = root / "manifest.sha256.sig"
     if args.action == "create":
+        # A rebuilt tree must never inherit an older approval or signature.
+        (root / "verification.json").unlink(missing_ok=True)
+        signature.unlink(missing_ok=True)
         path.write_text(manifest(root), encoding="ascii")
         if args.key:
             subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(args.key),

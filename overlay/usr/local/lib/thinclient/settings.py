@@ -15,6 +15,7 @@ import os  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
+from uijobs import BackgroundJob  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tcconfig  # noqa: E402
@@ -91,6 +92,10 @@ class SettingsDialog(Gtk.Dialog):
     def __init__(self, parent, cfg):
         super().__init__(title="Settings", transient_for=parent, modal=True)
         self.set_default_size(940, 660)
+        self._mode_job = BackgroundJob(GLib.idle_add)
+        self._diagnostic_job = BackgroundJob(GLib.idle_add)
+        self._diagnostic_controls = []
+        self.connect("destroy", lambda *_: (self._mode_job.close(), self._diagnostic_job.close()))
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         self.save_button = self.add_button("Save", Gtk.ResponseType.OK)
         self.save_button.get_style_context().add_class("suggested-action")
@@ -436,7 +441,8 @@ class SettingsDialog(Gtk.Dialog):
 
         grid.add_heading("Display")
         self.d["resolution"] = grid.add_row(
-            "Screen resolution", combo_entry(self._modes(), device.get("resolution", "auto")))
+            "Screen resolution", combo_entry(["auto"], device.get("resolution", "auto")))
+        self._mode_job.start(self._modes, self._show_modes)
         self.d["screen_blank_minutes"] = grid.add_row(
             "Blank screen after (min, 0 = never)",
             Gtk.SpinButton.new_with_range(0, 180, 5))
@@ -464,13 +470,24 @@ class SettingsDialog(Gtk.Dialog):
         self.d["admin_password"] = grid.add_row("New password", Gtk.Entry(visibility=False))
         self.d["admin_password"].set_placeholder_text(
             "leave empty to keep the current password")
-        clear = Gtk.CheckButton(label="Remove the password (Settings become unprotected)")
+        clear = Gtk.CheckButton(label="Reset the password (administrator setup will be required)")
         self.d["admin_clear"] = grid.add_wide(clear)
 
         scroller.add(grid)
         return scroller
 
-    def _modes(self):
+    def _show_modes(self, modes, error):
+        if error:
+            return
+        field = self.d["resolution"]
+        value = field.get_child().get_text()
+        field.remove_all()
+        for mode in modes:
+            field.append_text(mode)
+        field.get_child().set_text(value)
+
+    @staticmethod
+    def _modes():
         """Resolutions the primary output actually advertises."""
         modes = ["auto"]
         try:
@@ -530,6 +547,7 @@ class SettingsDialog(Gtk.Dialog):
                               ("Network", self._show_network_diag)):
             btn = Gtk.Button(label=text)
             btn.connect("clicked", handler)
+            self._diagnostic_controls.append(btn)
             row.pack_start(btn, False, False, 0)
         box.pack_start(row, False, False, 0)
 
@@ -548,20 +566,38 @@ class SettingsDialog(Gtk.Dialog):
             self._set_log("No session has been started since this client booted.")
 
     def _show_journal(self, *_):
-        output = subprocess.run(
-            ["journalctl", "-b", "--no-pager", "-n", "300"],
-            capture_output=True, text=True, timeout=20,
-        )
-        self._set_log(output.stdout or output.stderr)
+        def work():
+            output = subprocess.run(
+                ["journalctl", "-b", "--no-pager", "-n", "300"],
+                capture_output=True, text=True, timeout=20,
+            )
+            return output.stdout or output.stderr
+        self._diagnostic_operation(work)
+
+    def _diagnostic_operation(self, work):
+        if self._diagnostic_job.busy:
+            return
+        self._set_log("Reading diagnostics…")
+        for button in self._diagnostic_controls:
+            button.set_sensitive(False)
+        def done(result, error):
+            for button in self._diagnostic_controls:
+                button.set_sensitive(True)
+            self._set_log(error or result)
+        self._diagnostic_job.start(work, done)
 
     def _show_network_diag(self, *_):
+        self._diagnostic_operation(self._read_network_diag)
+
+    @staticmethod
+    def _read_network_diag():
         chunks = []
         for argv in (["ip", "-brief", "address"], ["ip", "route"],
                      ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"],
                      ["cat", "/etc/resolv.conf"]):
             result = subprocess.run(argv, capture_output=True, text=True, timeout=15)
             chunks.append("$ %s\n%s" % (" ".join(argv), result.stdout or result.stderr))
-        self._set_log("\n".join(chunks))
+        return "\n".join(chunks)
 
     # ------------------------------------------------------------ response --
     def _on_response(self, _dialog, response):
@@ -585,6 +621,9 @@ class NetworkDialog(Gtk.Dialog):
         self._test_generation = 0
         self._test_destroyed = False
         self.connect("destroy", self._on_test_destroyed)
+        self._network_job = BackgroundJob(GLib.idle_add)
+        self._network_controls = []
+        self.connect("destroy", lambda *_: self._network_job.close())
 
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
         self.get_content_area().pack_start(box, True, True, 0)
@@ -601,6 +640,9 @@ class NetworkDialog(Gtk.Dialog):
         box.pack_start(notebook, True, True, 0)
 
         self.message = Gtk.Label(xalign=0)
+        self.message.set_line_wrap(True)
+        self.network_spinner = Gtk.Spinner()
+        box.pack_start(self.network_spinner, False, False, 0)
         box.pack_start(self.message, False, False, 0)
 
         self.refresh()
@@ -755,7 +797,29 @@ class NetworkDialog(Gtk.Dialog):
         return subprocess.run(["sudo", "-n", "/usr/bin/nmcli", *args],
                               capture_output=True, text=True, timeout=timeout)
 
+    def _network_operation(self, text, work, complete):
+        if self._network_job.busy or self._network_job.closed:
+            return
+        self.message.set_text(text)
+        self.network_spinner.start()
+        for control in self._network_controls:
+            control.set_sensitive(False)
+
+        def done(result, error):
+            self.network_spinner.stop()
+            for control in self._network_controls:
+                control.set_sensitive(True)
+            if error:
+                self.message.set_text(error)
+            else:
+                complete(result)
+        self._network_job.start(work, done)
+
     def refresh(self, *_):
+        self._network_operation("Reading network devices…", self._read_devices, self._show_devices)
+
+    @staticmethod
+    def _read_devices():
         try:
             result = subprocess.run(
                 ["nmcli", "-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device"],
@@ -765,13 +829,13 @@ class NetworkDialog(Gtk.Dialog):
             result = type("Result", (), {"stdout": "", "stderr": str(exc),
                                           "returncode": 1})()
         lines = []
-        self.wired_devices = []
+        wired_devices = []
         for row in result.stdout.strip().splitlines():
             parts = tcconfig.parse_nmcli_terse(row)
             if len(parts) < 4 or parts[1] in ("loopback", "lo"):
                 continue
             if parts[1] == "ethernet":
-                self.wired_devices.append(parts[0])
+                wired_devices.append(parts[0])
             try:
                 addr = subprocess.run(
                     ["nmcli", "-g", "IP4.ADDRESS,IP4.GATEWAY", "device", "show", parts[0]],
@@ -781,8 +845,14 @@ class NetworkDialog(Gtk.Dialog):
                 addr = []
             lines.append("%-10s %-9s %-12s %s" % (parts[0], parts[1], parts[2],
                                                   " ".join(addr)))
+        return lines, wired_devices, result.returncode
+
+    def _show_devices(self, result):
+        lines, self.wired_devices, returncode = result
         self.status.set_markup("<tt>%s</tt>" % GLib.markup_escape_text(
             "\n".join(lines) or "no network devices detected"))
+        self.message.set_text("Network devices refreshed." if returncode == 0
+                              else "Could not read network devices. Check NetworkManager and retry.")
         if hasattr(self, "wired_device"):
             active = self.wired_device.get_active_text()
             self.wired_device.remove_all()
@@ -810,6 +880,7 @@ class NetworkDialog(Gtk.Dialog):
         apply_btn.connect("clicked", self._apply_wired)
         refresh_btn = Gtk.Button(label="Refresh")
         refresh_btn.connect("clicked", self.refresh)
+        self._network_controls.extend((apply_btn, refresh_btn))
         row.pack_start(apply_btn, False, False, 0)
         row.pack_start(refresh_btn, False, False, 0)
         grid.add_wide(row)
@@ -819,6 +890,19 @@ class NetworkDialog(Gtk.Dialog):
         device = self.wired_device.get_active_text()
         if not device:
             return
+        method = self.method.get_active_id()
+        address = self.addr.get_text().strip()
+        gateway = self.gw.get_text().strip()
+        dns = self.dns.get_text().strip()
+        if method == "manual" and "/" not in address:
+            self.message.set_text("Enter the address with a prefix, e.g. 192.168.1.50/24")
+            return
+        self._network_operation(
+            "Applying network settings… Closing this window will not undo the change.",
+            lambda: self._configure_wired(device, method, address, gateway, dns),
+            self.message.set_text)
+
+    def _configure_wired(self, device, method, address, gateway, dns):
         raw_name = subprocess.run(
             ["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", device],
             capture_output=True, text=True, timeout=15,
@@ -828,10 +912,7 @@ class NetworkDialog(Gtk.Dialog):
         if not name or name == "--":
             connected = self._nmcli("device", "connect", device)
             if connected.returncode != 0:
-                self.message.set_text(
-                    connected.stderr.strip() or "Could not connect the interface."
-                )
-                return
+                return "Could not connect the interface. Check its cable and retry."
             raw_name = subprocess.run(
                 ["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", device],
                 capture_output=True, text=True, timeout=15,
@@ -839,34 +920,23 @@ class NetworkDialog(Gtk.Dialog):
             name_fields = tcconfig.parse_nmcli_terse(raw_name)
             name = name_fields[0] if name_fields else ""
         if not name or name == "--":
-            self.message.set_text("No NetworkManager profile is bound to %s." % device)
-            return
+            return "No NetworkManager profile is bound to %s." % device
 
-        if self.method.get_active_id() == "manual":
-            address = self.addr.get_text().strip()
-            if "/" not in address:
-                self.message.set_text("Enter the address with a prefix, e.g. 192.168.1.50/24")
-                return
+        if method == "manual":
             args = ["connection", "modify", name, "ipv4.method", "manual",
                     "ipv4.addresses", address,
-                    "ipv4.gateway", self.gw.get_text().strip(),
-                    "ipv4.dns", self.dns.get_text().strip()]
+                    "ipv4.gateway", gateway, "ipv4.dns", dns]
         else:
             args = ["connection", "modify", name, "ipv4.method", "auto",
                     "ipv4.addresses", "", "ipv4.gateway", "", "ipv4.dns", ""]
 
         result = self._nmcli(*args)
         if result.returncode != 0:
-            self.message.set_text(result.stderr.strip() or "Could not apply the settings.")
-            return
+            return "Could not apply the settings. Check the address, prefix, gateway and DNS."
         activated = self._nmcli("connection", "up", name)
         if activated.returncode != 0:
-            self.message.set_text(
-                activated.stderr.strip() or "The profile was saved but could not be activated."
-            )
-            return
-        self.message.set_text("Applied to %s." % name)
-        GLib.timeout_add_seconds(2, lambda: (self.refresh(), False)[1])
+            return "The profile was saved but could not be activated. Check the network and retry."
+        return "Applied to %s. Use Refresh to check its address." % name
 
     def _wifi_page(self):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=12)
@@ -883,6 +953,7 @@ class NetworkDialog(Gtk.Dialog):
         scan.connect("clicked", self._scan_wifi)
         join = Gtk.Button(label="Connect")
         join.connect("clicked", self._join_wifi)
+        self._network_controls.extend((scan, join))
         row.pack_start(scan, False, False, 0)
         row.pack_start(join, False, False, 0)
         grid.add_wide(row)
@@ -890,20 +961,31 @@ class NetworkDialog(Gtk.Dialog):
         return box
 
     def _scan_wifi(self, *_):
+        self._network_operation("Scanning Wi-Fi…", self._read_wifi, self._show_wifi)
+
+    def _read_wifi(self):
         self._nmcli("device", "wifi", "rescan")
         result = subprocess.run(
             ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list"],
             capture_output=True, text=True, timeout=45,
         )
-        self.ssid.remove_all()
+        if result.returncode != 0:
+            raise RuntimeError("Wi-Fi scan failed")
+        names = []
         seen = set()
         for line in result.stdout.strip().splitlines():
             fields = tcconfig.parse_nmcli_terse(line)
             name = fields[0] if fields else ""
             if name and name not in seen:
                 seen.add(name)
-                self.ssid.append_text(name)
-        self.message.set_text("Found %d network(s)." % len(seen))
+                names.append(name)
+        return names
+
+    def _show_wifi(self, names):
+        self.ssid.remove_all()
+        for name in names:
+            self.ssid.append_text(name)
+        self.message.set_text("Found %d network(s)." % len(names))
 
     def _join_wifi(self, *_):
         name = self.ssid.get_child().get_text().strip()
@@ -912,9 +994,10 @@ class NetworkDialog(Gtk.Dialog):
         args = ["device", "wifi", "connect", name]
         if self.wifi_pass.get_text():
             args += ["password", self.wifi_pass.get_text()]
-        result = self._nmcli(*args, timeout=90)
-        self.message.set_text(
-            "Connected to %s." % name if result.returncode == 0
-            else (result.stderr.strip() or "Could not join the network.")
-        )
-        self.refresh()
+        def work():
+            result = self._nmcli(*args, timeout=90)
+            return ("Connected to %s." % name if result.returncode == 0 else
+                    "Could not join the network. Check the password, signal and access point.")
+        self._network_operation("Joining Wi-Fi… Closing this window will not undo the change.",
+                                work, self.message.set_text)
+        self.wifi_pass.set_text("")

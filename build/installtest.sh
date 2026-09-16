@@ -25,16 +25,32 @@ MON=/tmp/tc-install-monitor.sock
 rm -rf "$OUT"; mkdir -p "$OUT"; rm -f "$MON"
 pkill -f 'tc-install-monitor' 2>/dev/null; sleep 1
 
-ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)
+ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu "${TC_TEST_CPU:-host}")
 firmware() {
-    if [ "$MODE" = "uefi" ]; then
-        cp /usr/share/OVMF/OVMF_VARS_4M.fd "$OUT/vars.fd"
+    if [ "$MODE" = "uefi" ] || [ "$MODE" = "secureboot" ]; then
+        local code=/usr/share/OVMF/OVMF_CODE_4M.fd
+        local vars=/usr/share/OVMF/OVMF_VARS_4M.fd
+        if [ "$MODE" = "secureboot" ]; then
+            code=/usr/share/OVMF/OVMF_CODE_4M.secboot.fd
+            vars=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
+            printf '%s\n' -machine q35,smm=on -global driver=cfi.pflash01,property=secure,value=on
+        fi
+        cp "$vars" "$OUT/vars.fd"
         printf '%s\n' \
-            "-drive" "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd" \
+            "-drive" "if=pflash,format=raw,readonly=on,file=$code" \
             "-drive" "if=pflash,format=raw,file=$OUT/vars.fd"
     fi
 }
 mapfile -t FIRMWARE < <(firmware)
+case "${TC_TEST_DISK_BUS:-virtio}" in
+    virtio) TARGET=/dev/vda; TARGET_DRIVE=(-drive "file=$DISK,format=qcow2,if=virtio") ;;
+    sata) TARGET=/dev/sda; TARGET_DRIVE=(-device ich9-ahci,id=testsata
+        -drive "file=$DISK,format=qcow2,if=none,id=testdisk"
+        -device ide-hd,drive=testdisk,bus=testsata.0) ;;
+    nvme) TARGET=/dev/nvme0n1; TARGET_DRIVE=(-drive "file=$DISK,format=qcow2,if=none,id=testdisk"
+        -device nvme,drive=testdisk,serial=TC-TEST-ONLY) ;;
+    *) echo 'TC_TEST_DISK_BUS must be virtio, sata or nvme' >&2; exit 2 ;;
+esac
 
 cat > /tmp/tc-mon4.py <<'PYEOF'
 import socket, sys, time
@@ -71,14 +87,14 @@ qemu-img create -f qcow2 "$DISK" 8G >/dev/null
 # the two must not be swapped.
 # =============================================================================
 echo
-echo "phase 1: unattended install to /dev/vda"
+echo "phase 1: unattended install to $TARGET (${TC_TEST_DISK_BUS:-virtio})"
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
-    -m 2560 -smp 4 \
+    -m "${TC_TEST_RAM_MB:-2560}" -smp "${TC_TEST_CPUS:-4}" \
     -kernel "$KERNEL" -initrd "$INITRD" \
-    -append "boot=live components union=overlay tc.install.auto=1 tc.install.target=/dev/vda console=tty0 console=ttyS0,115200" \
-    -drive "file=$DISK,format=qcow2,if=virtio" \
+    -append "boot=live components union=overlay tc.install.auto=1 tc.install.target=$TARGET console=tty0 console=ttyS0,115200" \
+    "${TARGET_DRIVE[@]}" \
     -drive "file=$ISO,format=raw,if=virtio,readonly=on" \
-    -vga std -netdev user,id=n0 -device e1000,netdev=n0 \
+    -vga "${TC_TEST_VGA:-std}" -netdev user,id=n0 -device "${TC_TEST_NIC:-e1000},netdev=n0" \
     -display none -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/install-serial.log" \
     > "$OUT/qemu-install.log" 2>&1 &
@@ -113,18 +129,22 @@ fi
 echo
 echo "phase 2: booting the installed disk, no media attached"
 mapfile -t FIRMWARE < <(firmware)          # fresh NVRAM, so no cached boot entry
+BOOT_STARTED="$(python3 -c 'import time; print(time.monotonic())')"
 
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
-    -m 2560 -smp 4 \
-    -drive "file=$DISK,format=qcow2,if=virtio" -boot c \
+    -m "${TC_TEST_RAM_MB:-2560}" -smp "${TC_TEST_CPUS:-4}" \
+    "${TARGET_DRIVE[@]}" -boot c \
     -device virtio-serial-pci \
     -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
     -device virtserialport,chardev=tcboot,name=org.thinclient.test \
-    -vga std -netdev user,id=n0 -device e1000,netdev=n0 \
+    -vga "${TC_TEST_VGA:-std}" -netdev user,id=n0 -device "${TC_TEST_NIC:-e1000},netdev=n0" \
     -display none -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/boot-serial.log" \
     > "$OUT/qemu-boot.log" 2>&1 &
 QEMU=$!
+python3 "$REPO/tools/boot-timer.py" "$OUT/ready.jsonl" --started "$BOOT_STARTED" \
+    --output "$OUT/boot-timing.json" > "$OUT/timer.log" 2>&1 &
+BOOT_TIMER=$!
 for _ in $(seq 1 30); do [ -S "$MON" ] && break; sleep 1; done
 
 LAST=0; BEST=0
@@ -138,6 +158,8 @@ for T in 20 40 60 90; do
     grep -q '"event": "ui_ready"' "$OUT/ready.jsonl" && break
 done
 
+kill "$BOOT_TIMER" 2>/dev/null || true
+wait "$BOOT_TIMER" 2>/dev/null || true
 mon "quit"; sleep 2; kill -9 "$QEMU" 2>/dev/null
 
 echo

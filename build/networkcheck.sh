@@ -58,6 +58,17 @@ for module in $EARLY_MODULES; do
 done
 
 echo
+echo "=== early-boot internal storage ==="
+for module in nvme vmd mmc_block sdhci sdhci_pci sdhci_acpi; do
+    pattern="${module//_/[-_]}"
+    if grep -Eq "/${pattern}\\.ko(\\.|$)" <<<"$INITRD_LIST"; then
+        ok "$module supports internal-disk boot"
+    else
+        bad "$module is missing from initramfs"
+    fi
+done
+
+echo
 echo "=== wired firmware ==="
 for package in firmware-realtek firmware-bnx2 firmware-bnx2x firmware-misc-nonfree; do
     has_package "$package" && ok "$package" || bad "$package is not installed"

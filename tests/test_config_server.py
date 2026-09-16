@@ -58,7 +58,7 @@ class ConfigurationSummary(unittest.TestCase):
         class NonServingServer:
             started = False
 
-            def __init__(self, *_args):
+            def __init__(self, *_args, **_kwargs):
                 pass
 
             def __enter__(self):
@@ -82,6 +82,54 @@ class ConfigurationSummary(unittest.TestCase):
 
         self.assertIn("not a valid ThinClient config", output.getvalue())
         self.assertTrue(NonServingServer.started)
+
+
+@unittest.skipUnless(SERVER_AVAILABLE, "requires server sources")
+class ServerAdmission(unittest.TestCase):
+    def test_connection_limit_rejects_excess_and_reuses_slot(self):
+        entered, release = threading.Event(), threading.Event()
+        class Handler(config_server.socketserver.BaseRequestHandler):
+            def handle(self):
+                entered.set()
+                release.wait(5)
+                self.request.sendall(b"done")
+        server = config_server.Server(("127.0.0.1", 0), Handler, max_workers=1)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with socket.create_connection(server.server_address, timeout=2) as first:
+                self.assertTrue(entered.wait(2))
+                with socket.create_connection(server.server_address, timeout=2) as excess:
+                    self.assertIn(b"503 Service Unavailable", excess.recv(1024))
+                self.assertEqual(1, server.rejected_requests)
+                release.set()
+                self.assertEqual(b"done", first.recv(4))
+                # EOF arrives after the request's shutdown. Joining tracked
+                # worker completion via the semaphore avoids sleep-based races.
+                self.assertTrue(server._worker_slots.acquire(timeout=2))
+                server._worker_slots.release()
+                with socket.create_connection(server.server_address, timeout=2) as following:
+                    self.assertEqual(b"done", following.recv(4))
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(5)
+
+    def test_invalid_limits_are_rejected(self):
+        for limit in (0, -1, 1025):
+            with self.assertRaises(ValueError):
+                config_server.Server(("127.0.0.1", 0), object, max_workers=limit)
+
+    def test_tls_overload_does_not_handshake_on_accept_thread(self):
+        server = config_server.Server(("127.0.0.1", 0), object, max_workers=1)
+        self.addCleanup(server.server_close)
+        server._worker_slots.acquire()
+        request = mock.Mock(spec=ssl.SSLSocket)
+        with mock.patch.object(server, "shutdown_request") as close:
+            server.process_request(request, ("127.0.0.1", 1))
+        request.sendall.assert_not_called()
+        close.assert_called_once_with(request)
 
 
 @unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
@@ -441,6 +489,37 @@ class ConfigServerHttp(unittest.TestCase):
 
 @unittest.skipUnless(SERVER_AVAILABLE, "tc-config-server.py is not installed in the client image")
 class StatusMonitorState(unittest.TestCase):
+    def test_slow_persistence_does_not_block_progress_or_snapshot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            monitor = config_server.StatusMonitor(state_file=str(Path(directory) / "state.json"))
+            request = monitor.begin("GET", "/a", "192.0.2.1")
+            writing, release, updated = threading.Event(), threading.Event(), threading.Event()
+            original = monitor._write_state
+            def slow(document):
+                writing.set()
+                if not release.wait(5):
+                    raise AssertionError("test did not release writer")
+                return original(document)
+            def update():
+                monitor.add_bytes(request, 123)
+                monitor.snapshot()
+                updated.set()
+            with mock.patch.object(monitor, "_write_state", side_effect=slow):
+                writer = threading.Thread(target=monitor.begin, args=("GET", "/b", "192.0.2.2"))
+                writer.start()
+                try:
+                    self.assertTrue(writing.wait(2))
+                    updater = threading.Thread(target=update)
+                    updater.start()
+                    self.assertTrue(updated.wait(2), "progress was blocked by persistence I/O")
+                finally:
+                    release.set()
+                    writer.join(5)
+                    if 'updater' in locals():
+                        updater.join(5)
+            self.assertEqual(2, config_server.StatusMonitor(
+                state_file=str(Path(directory) / "state.json")).snapshot()["totals"]["requests"])
+
     def test_anonymous_boot_activity_merges_when_mac_arrives(self):
         monitor = config_server.StatusMonitor()
         root_request = monitor.begin(

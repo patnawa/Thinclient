@@ -8,7 +8,7 @@ The implemented normal-user and administrator interaction baseline, privacy
 rules, rendering matrix, and next UI studies are recorded in
 [`UI-UX.md`](UI-UX.md).
 
-The 1.5 candidate implements checked cache writes, bounded configuration refresh,
+The 1.5.0 release implements checked cache writes, bounded configuration refresh,
 signed release/configuration artifacts, administrator setup, smaller UI modules,
 local fleet measurements and repeatable final-image gates. See
 [`RELEASE-OPERATIONS.md`](RELEASE-OPERATIONS.md) for the operational contract.
@@ -17,10 +17,10 @@ retain the deployed stable release until the candidate's recorded gates pass.
 
 ## Current release architecture
 
-ThinClient 1.4 provides two independently versioned x86-64 images:
+ThinClient provides two independently versioned x86-64 images:
 
 - **Lite** is the default for common Dell, HP, Acer, ASUS, ASRock, and Gigabyte
-  office hardware. It retains wired networking, graphics, audio, RDP/VNC,
+  office hardware. It retains wired networking, graphics, audio, RDP,
   legacy BIOS, UEFI, Secure Boot, and the installer while omitting Wi-Fi and
   less-common firmware.
 - **Full Drivers** is the compatibility fallback for Wi-Fi, uncommon network
@@ -104,6 +104,14 @@ Record these values for every release so regressions are visible:
 - Boot success by firmware mode, Secure Boot state, NIC, GPU, and machine model.
 
 ## Prioritized improvements
+
+The 1.5.1 development candidate addresses installer preflight/error propagation,
+asynchronous UI operations, Lite eMMC boot drivers, absent-USB probe delays,
+stale trust material, bounded server workers and nonblocking progress accounting.
+Its supplemental gates and physical evidence requirements are in
+[`HARDWARE-PERFORMANCE.md`](HARDWARE-PERFORMANCE.md). The historical backlog below
+also includes capabilities already introduced in 1.5.0; verify current code and
+recorded test evidence before selecting another implementation task.
 
 ### P0: fleet reliability and security
 

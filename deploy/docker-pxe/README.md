@@ -64,14 +64,15 @@ To build the image directly from a repository checkout:
 cd Thinclient
 sudo docker build \
   --file deploy/docker-pxe/Dockerfile \
-  --tag thinclient-pxe-server:1.4.1 .
+  --tag thinclient-pxe-server:1.5.1 .
 ```
 
 The normal `deploy.sh` command performs this local build automatically. A
-published image is also available from GitHub Container Registry:
+stable 1.5.0 image is also available from GitHub Container Registry (the local
+1.5.1 development candidate is not published):
 
 ```bash
-sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.4.1
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.5.0
 ```
 
 Publishing is automated by `.github/workflows/publish-container.yml` whenever
@@ -89,7 +90,7 @@ sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 To deploy the published image instead of compiling it on the Debian host:
 
 ```bash
-sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.4.1 \
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.5.0 \
   bash deploy/docker-pxe/deploy.sh \
   192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
@@ -204,8 +205,19 @@ For a lab or office that may start many machines together, install `curl` and
 downloads:
 
 ```bash
-bash deploy/docker-pxe/load-test.sh 192.168.1.20 50 8080
+# Only during an approved maintenance window. Supply a trusted local kernel.
+ALLOW_REMOTE_LOAD=1 bash deploy/docker-pxe/load-test.sh 192.168.1.20 50 8080 \
+  thinclient/lite/vmlinuz /path/to/approved/pxe/thinclient/lite/vmlinuz
 ```
+
+The helper now rejects remote load without explicit opt-in and checks every HTTP
+and TFTP transfer against the trusted artifact. For isolated full-filesystem
+benchmarks, see [hardware and performance validation](../../docs/HARDWARE-PERFORMANCE.md).
+`HTTP_MAX_WORKERS` defaults to 128; excess plain-HTTP connections receive 503 with
+`Retry-After`, while excess TLS connections close without blocking the accept loop.
+The `/metrics` endpoint exposes rejected connections and the configured limit.
+Durable history writes remain synchronous at request start/finish, but disk I/O
+no longer holds the transfer-progress lock.
 
 This proves request concurrency, not aggregate switch capacity. Fifty Lite
 root downloads total about 18.1 GB, so a single 1 GbE uplink still imposes a
