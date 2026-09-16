@@ -16,7 +16,7 @@ import subprocess  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tcconfig  # noqa: E402
 import networkdiag  # noqa: E402
 import uxstate  # noqa: E402
@@ -30,9 +30,9 @@ KEYMAPS = ["us", "gb", "th", "de", "fr", "es", "it", "jp", "kr", "cn", "ru", "br
 
 DISPLAY_MODES = [("fullscreen", "Full screen"), ("multimon", "All monitors"),
                  ("window", "Window"), ("custom", "Custom size...")]
-CERT_MODES = [("ignore", "Accept any certificate (LAN)"),
+CERT_MODES = [("strict", "Verify against installed CAs"),
               ("tofu", "Trust on first use"),
-              ("strict", "Verify against installed CAs")]
+              ("ignore", "Accept any certificate (compatibility only)")]
 SEC_MODES = [("auto", "Negotiate"), ("nla", "NLA (CredSSP)"), ("tls", "TLS"), ("rdp", "Legacy RDP")]
 GFX_MODES = [("auto", "Automatic"), ("avc444", "H.264 AVC444"), ("avc420", "H.264 AVC420"),
              ("rfx", "RemoteFX"), ("none", "Plain bitmap")]
@@ -193,7 +193,7 @@ class SettingsDialog(Gtk.Dialog):
 
         advanced.add_heading("Security")
         self.f["security"] = advanced.add_row("Protocol", combo(SEC_MODES, "auto"))
-        self.f["cert_policy"] = advanced.add_row("Certificates", combo(CERT_MODES, "ignore"))
+        self.f["cert_policy"] = advanced.add_row("Certificates", combo(CERT_MODES, "strict"))
         self.f["gateway"] = advanced.add_row("RD Gateway", Gtk.Entry())
         self.f["gateway"].set_placeholder_text("optional: gateway.example.com")
         self.f["gateway_username"] = advanced.add_row("Gateway user", Gtk.Entry())
@@ -334,7 +334,7 @@ class SettingsDialog(Gtk.Dialog):
             self.f["display_custom"].set_text(display)
         self._on_display_changed(self.f["display"])
 
-        for key, default in (("cert_policy", "ignore"), ("security", "auto"),
+        for key, default in (("cert_policy", "strict"), ("security", "auto"),
                              ("gfx", "auto"), ("network", "auto"),
                              ("protocol", "rdp")):
             self.f[key].set_active_id(conn.get(key, default) or default)
@@ -455,7 +455,7 @@ class SettingsDialog(Gtk.Dialog):
         self.d["allow_console"].set_active(bool(device.get("allow_console", False)))
         self.d["allow_terminal"] = grid.add_wide(
             Gtk.CheckButton(label="Allow Terminal in administrator tools"))
-        self.d["allow_terminal"].set_active(bool(device.get("allow_terminal", True)))
+        self.d["allow_terminal"].set_active(bool(device.get("allow_terminal", False)))
         self.d["show_ip"] = grid.add_wide(
             Gtk.CheckButton(label="Show the IP address on screen"))
         self.d["show_ip"].set_active(bool(device.get("show_ip", True)))

@@ -36,6 +36,7 @@ import os
 import re
 import socket
 import socketserver
+import ssl
 import sys
 import threading
 import time
@@ -47,7 +48,7 @@ MAC_RE = re.compile(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}\Z", re.IGNORECASE)
 PER_DEVICE_CONFIG_RE = re.compile(
     r"config-[0-9a-f]{2}(?:-[0-9a-f]{2}){5}\.json\Z"
 )
-STATUS_PATHS = frozenset(("/healthz", "/status", "/status/", "/status.json"))
+STATUS_PATHS = frozenset(("/healthz", "/status", "/status/", "/status.json", "/metrics"))
 
 
 def utc_timestamp(timestamp):
@@ -1222,7 +1223,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._serving_selected_config = False
         try:
             requested = self._decoded_url_path(original_path)
-            if requested is not None and os.path.basename(requested) == CONFIG_NAME:
+            if requested is not None and os.path.basename(requested) in (CONFIG_NAME, CONFIG_NAME + ".sig"):
                 served = self._config_for_client(requested)
                 if served:
                     self.path = "/" + os.path.relpath(
@@ -1313,6 +1314,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 200 if health["status"] == "ok" else 503,
                 "application/json; charset=utf-8", body, head_only,
             )
+        elif path == "/metrics":
+            snapshot = self._status_snapshot()
+            totals = snapshot["totals"]
+            mapping = (("requests_total", "requests", "counter"),
+                       ("failed_requests_total", "failed_requests", "counter"),
+                       ("bytes_sent_total", "bytes_sent", "counter"),
+                       ("boot_requests_total", "boots", "counter"),
+                       ("active_transfers", "active_transfers", "gauge"))
+            lines = []
+            for name, key, kind in mapping:
+                lines.extend(("# TYPE thinclient_%s %s" % (name, kind),
+                              "thinclient_%s %s" % (name, totals[key])))
+            self._send_monitor_response(200, "text/plain; version=0.0.4; charset=utf-8",
+                                        "\n".join(lines) + "\n", head_only)
         elif path == "/status.json":
             body = json.dumps(
                 self._status_snapshot(), indent=2, sort_keys=True
@@ -1385,7 +1400,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if requested_path is None:
             return None
         directory = os.path.dirname(requested_path)
-        candidate = os.path.join(directory, "config-%s.json" % mac.replace(":", "-"))
+        suffix = ".sig" if requested.endswith(".sig") else ""
+        candidate = os.path.join(directory, "config-%s.json%s" % (mac.replace(":", "-"), suffix))
         return candidate if os.path.isfile(candidate) else None
 
     def log_message(self, fmt, *args):
@@ -1400,6 +1416,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+    tls_context = None
+
+    def get_request(self):
+        connection, address = super().get_request()
+        connection.settimeout(30)
+        if self.tls_context is not None:
+            connection = self.tls_context.wrap_socket(
+                connection, server_side=True, do_handshake_on_connect=False)
+        return connection, address
     # A classroom/lab can power on dozens of PXE clients together. The stdlib
     # default backlog is only 5, which can reject connections during that boot
     # burst even though each accepted transfer runs in its own worker thread.
@@ -1427,6 +1452,8 @@ def main():
                         help="directory to serve (default: out/pxe)")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--bind", default="0.0.0.0")
+    parser.add_argument("--tls-cert", help="PEM certificate for an HTTPS listener")
+    parser.add_argument("--tls-key", help="PEM private key for an HTTPS listener")
     parser.add_argument(
         "--state-file",
         help="persist bounded HTTP status history to this crash-safe JSON file",
@@ -1436,6 +1463,8 @@ def main():
         help="IANA timezone for the HTML status page (default: UTC)",
     )
     args = parser.parse_args()
+    if bool(args.tls_cert) != bool(args.tls_key):
+        parser.error("--tls-cert and --tls-key must be supplied together")
 
     root = os.path.abspath(args.root)
     if not os.path.isdir(root):
@@ -1487,6 +1516,11 @@ def main():
     print("\nCtrl+C to stop\n")
 
     with Server((args.bind, args.port), Handler) as httpd:
+        if args.tls_cert:
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(args.tls_cert, args.tls_key)
+            httpd.tls_context = context
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

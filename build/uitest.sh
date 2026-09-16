@@ -21,7 +21,7 @@ command -v import >/dev/null || { echo "install imagemagick"; exit 1; }
 
 # Stage the overlay exactly where the image puts it.
 install -d /usr/local/lib/thinclient /etc/thinclient /run/thinclient
-for f in "$REPO"/overlay/usr/local/lib/thinclient/*.py; do
+for f in "${TC_UI_LIBRARY:-$REPO/overlay/usr/local/lib/thinclient}"/*.py; do
   sed 's/\r$//' "$f" > "/usr/local/lib/thinclient/$(basename "$f")"
 done
 sed 's/\r$//' "$REPO/overlay/etc/thinclient/config.json" > /etc/thinclient/config.json
@@ -150,6 +150,8 @@ Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", Tru
 # avoid publishing the build workstation's hostname, address, or hardware.
 manager.socket.gethostname = lambda: "TC-DEMO-01"
 manager.primary_ip = lambda: "192.168.10.42"
+import dialogs
+dialogs.primary_ip = manager.primary_ip
 manager.active_link_summary = lambda: "1 Gb/s"
 manager.hardware_info = lambda: {
     "Architecture": "x86_64",
@@ -167,6 +169,25 @@ GLib.timeout_add(500, lambda: (window.on_about(), False)[1])
 Gtk.main()
 PYEOF
   DISPLAY=$DISP python3 /tmp/tc-about-driver.py > /tmp/tc-ui.log 2>&1 &
+elif [ "$MODE" = "setup" ]; then
+  cat > /tmp/tc-setup-driver.py <<'PYEOF'
+import sys
+sys.path.insert(0, "/usr/local/lib/thinclient")
+import gi
+gi.require_version("Gtk", "3.0")
+from gi.repository import Gtk, Gdk, GLib
+import manager
+provider = Gtk.CssProvider(); provider.load_from_data(manager.CSS)
+Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), provider,
+                                        Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+window = manager.ThinClient()
+window.cfg["device"]["admin_password"] = ""
+Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
+window.show_all()
+GLib.idle_add(window.authorised)
+Gtk.main()
+PYEOF
+  DISPLAY=$DISP python3 /tmp/tc-setup-driver.py > /tmp/tc-ui.log 2>&1 &
 elif [ "$MODE" = "admin" ] || [ "$MODE" = "progress" ] || \
      [ "$MODE" = "error" ] || [ "$MODE" = "changelog" ]; then
   cat > /tmp/tc-dialog-driver.py <<PYEOF

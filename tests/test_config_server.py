@@ -8,6 +8,10 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
+import socket
+import ssl
+import subprocess
 import sys
 import tempfile
 import threading
@@ -223,6 +227,52 @@ class ConfigServerHttp(unittest.TestCase):
 
         self.assertEqual(404, status)
         self.assertNotIn(b"config-aa-bb-cc-dd-ee-ff.json", body)
+
+    @unittest.skipUnless(shutil.which("openssl"), "requires OpenSSL for ephemeral TLS fixture")
+    def test_https_serves_configuration_while_another_handshake_is_stalled(self):
+        key, certificate = self.base / "test.key", self.base / "test.crt"
+        subprocess.run([
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key), "-out", str(certificate), "-days", "1",
+            "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1",
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        self.server.tls_context = context
+        self.write("config.json", '{"schema":1}')
+        stalled = socket.create_connection(self.server.server_address, timeout=3)
+        try:
+            connection = http.client.HTTPSConnection(
+                "127.0.0.1", self.server.server_address[1], timeout=3,
+                context=ssl.create_default_context(cafile=str(certificate)))
+            try:
+                connection.request("GET", "/config.json")
+                response = connection.getresponse()
+                self.assertEqual(200, response.status)
+                self.assertEqual({"schema": 1}, json.loads(response.read()))
+            finally:
+                connection.close()
+        finally:
+            stalled.close()
+
+    def test_metrics_are_aggregate_and_do_not_expose_client_identity(self):
+        self.write("config.json", "{}")
+        self.request("GET", "/config.json", {"X-ThinClient-MAC": "aa:bb:cc:dd:ee:ff"})
+        status, headers, body = self.request("GET", "/metrics")
+        self.assertEqual(200, status)
+        self.assertIn(b"thinclient_requests_total", body)
+        self.assertNotIn(b"aa:bb:cc", body)
+        self.assertNotIn(b"127.0.0.1", body)
+
+    def test_signature_selection_matches_per_device_configuration(self):
+        self.write("config.json.sig", "default signature")
+        self.write("config-aa-bb-cc-dd-ee-ff.json.sig", "device signature")
+        for method in ("GET", "HEAD"):
+            status, headers, body = self.request(method, "/config.json.sig",
+                                                {"X-ThinClient-MAC": "aa:bb:cc:dd:ee:ff"})
+            self.assertEqual(200, status)
+            self.assertEqual(str(len("device signature")), headers["Content-Length"])
+        self.assertEqual(404, self.request("GET", "/config-aa-bb-cc-dd-ee-ff.json.sig")[0])
 
     def test_direct_per_device_config_requests_are_rejected(self):
         self.write("config-aa-bb-cc-dd-ee-ff.json", "device config")

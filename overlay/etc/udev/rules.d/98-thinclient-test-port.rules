@@ -1,0 +1,2 @@
+# Exists only when an isolated VM test explicitly attaches this named port.
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.thinclient.test", GROUP="thin", MODE="0660"

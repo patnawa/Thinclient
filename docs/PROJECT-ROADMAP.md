@@ -8,6 +8,13 @@ The implemented normal-user and administrator interaction baseline, privacy
 rules, rendering matrix, and next UI studies are recorded in
 [`UI-UX.md`](UI-UX.md).
 
+The 1.5 candidate implements checked cache writes, bounded configuration refresh,
+signed release/configuration artifacts, administrator setup, smaller UI modules,
+local fleet measurements and repeatable final-image gates. See
+[`RELEASE-OPERATIONS.md`](RELEASE-OPERATIONS.md) for the operational contract.
+These are implementation capabilities, not evidence of physical fleet approval;
+retain the deployed stable release until the candidate's recorded gates pass.
+
 ## Current release architecture
 
 ThinClient 1.4 provides two independently versioned x86-64 images:

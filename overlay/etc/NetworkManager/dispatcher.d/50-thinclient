@@ -49,8 +49,8 @@ for candidate in "${DHCP4_PRIVATE_224:-}" "${DHCP4_OPTION_224:-}" "${DHCP4_TC_CO
     esac
 done
 
-/usr/local/sbin/tc-fetch-config >/dev/null 2>&1
-/usr/local/sbin/tc-apply-config >/dev/null 2>&1
+/usr/bin/timeout --kill-after=2 40 /usr/local/sbin/tc-fetch-config >/dev/null 2>&1
+/usr/bin/timeout --kill-after=2 45 /usr/local/sbin/tc-apply-config >/dev/null 2>&1
 
 # Tell a running connection manager to reload its list.
 pkill -HUP -f '/usr/local/lib/thinclient/manager.py' 2>/dev/null

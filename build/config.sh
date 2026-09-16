@@ -5,7 +5,7 @@
 
 # ---------------------------------------------------------------- identity ---
 DISTRO_NAME="${DISTRO_NAME:-ThinClient}"
-DISTRO_VERSION="${DISTRO_VERSION:-1.4.1}"
+DISTRO_VERSION="${DISTRO_VERSION:-1.5.0}"
 IMAGE_NAME="${IMAGE_NAME:-thinclient-amd64}"
 
 # ------------------------------------------------------------------- base ----
@@ -65,6 +65,12 @@ DEFAULT_DOMAIN="${DEFAULT_DOMAIN:-}"
 DEFAULT_TIMEZONE="${DEFAULT_TIMEZONE:-Asia/Bangkok}"
 DEFAULT_KEYMAP="${DEFAULT_KEYMAP:-us}"
 DEFAULT_NTP="${DEFAULT_NTP:-pool.ntp.org}"
+DEFAULT_CONFIG_FILE="${DEFAULT_CONFIG_FILE:-}" # optional complete site configuration
+TRUST_POLICY_FILE="${TRUST_POLICY_FILE:-}"     # immutable fetch/security policy
+CONFIG_PUBLIC_KEY_FILE="${CONFIG_PUBLIC_KEY_FILE:-}"
+CONFIG_SIGNING_KEY="${CONFIG_SIGNING_KEY:-}"
+RELEASE_SIGNING_KEY="${RELEASE_SIGNING_KEY:-}" # private key stays on build host
+RELEASE_PUBLIC_KEY_FILE="${RELEASE_PUBLIC_KEY_FILE:-}"
 
 # ------------------------------------------------------------ boot params ----
 # 'toram' makes the client fully independent of the USB stick after boot and is
@@ -81,7 +87,7 @@ KERNEL_CMDLINE="${KERNEL_CMDLINE:-boot=live components quiet loglevel=3 union=ov
 #       DEFAULT_SERVER=192.168.1.50
 #       DEFAULT_DOMAIN=CORP
 #
-if [ -f "${BASH_SOURCE%/*}/config.local.sh" ]; then
+if [ -f "${TC_CONFIG_LOCAL:-${BASH_SOURCE%/*}/config.local.sh}" ]; then
     # shellcheck source=/dev/null
-    . "${BASH_SOURCE%/*}/config.local.sh"
+    . "${TC_CONFIG_LOCAL:-${BASH_SOURCE%/*}/config.local.sh}"
 fi

@@ -32,13 +32,16 @@ done
 
 echo
 echo "=== early-boot network drivers ==="
-INITRD="$(ls -1 "$ROOTFS"/boot/initrd.img-* | sort -V | tail -1)"
+INITRD="${INITRD:-${PXE:-${OUTDIR:-$REPO/out}/pxe}/thinclient/initrd.img}"
+[ -r "$INITRD" ] || { echo "missing exported initramfs: $INITRD" >&2; exit 1; }
 if command -v lsinitramfs >/dev/null 2>&1; then
     INITRD_LIST="$(lsinitramfs "$INITRD")"
 else
     # The Windows/WSL build host may not have initramfs-tools installed even
     # though the assembled client does. Inspect it with the image's own tool.
-    INITRD_GUEST="${INITRD#"$ROOTFS"}"
+    install -d "$ROOTFS/opt/test-assets"
+    cp "$INITRD" "$ROOTFS/opt/test-assets/initrd.img"
+    INITRD_GUEST=/opt/test-assets/initrd.img
     INITRD_LIST="$(chroot "$ROOTFS" lsinitramfs "$INITRD_GUEST")"
 fi
 if [ "$INITRAMFS_MODULES" = list ]; then

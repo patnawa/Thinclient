@@ -65,6 +65,28 @@ class ValidateTarget(unittest.TestCase):
 
 
 class InstallOrdering(unittest.TestCase):
+    def test_partition_waits_for_usable_devices_not_stale_nodes(self):
+        probes = []
+        def run(arguments, **_kwargs):
+            if arguments[0] == "blockdev":
+                probes.append(arguments[-1])
+                return completed("1048576" if len(probes) > 2 else "", 0 if len(probes) > 2 else 1)
+            return completed()
+        with mock.patch.object(tc_install, "run", side_effect=run) as commands, \
+                mock.patch.object(tc_install.time, "sleep") as sleep:
+            tc_install.partition("/dev/vda")
+        sleep.assert_called_once_with(0.5)
+        commands.assert_any_call(["udevadm", "settle", "--timeout=10"], quiet=True)
+        self.assertEqual(["/dev/vda2", "/dev/vda3"] * 2, probes)
+
+    def test_unusable_partition_nodes_fail_before_formatting(self):
+        with mock.patch.object(tc_install, "run", return_value=completed("", 1)), \
+                mock.patch.object(tc_install.time, "sleep"), \
+                mock.patch.object(tc_install, "format_partitions") as formatting:
+            with self.assertRaisesRegex(tc_install.InstallError, "did not appear"):
+                tc_install.partition("/dev/vda")
+        formatting.assert_not_called()
+
     def test_target_is_validated_before_the_first_destructive_step(self):
         with mock.patch.object(
                 tc_install, "validate_target",

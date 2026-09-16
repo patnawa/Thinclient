@@ -1,6 +1,19 @@
 # ThinClient changelog
 
-## Unreleased
+## 1.5.0 — 2026-09-16
+
+- Reject failed, truncated, interrupted, and unflushed USB-cache writes; verify
+  the saved file and retain the previous cache until publication succeeds.
+- Separate source tests from tests of the extracted final image. Add CI and
+  explicit connection-manager readiness checks for BIOS, UEFI and PXE boots.
+- Default new connections to certificate verification and disable Terminal by
+  default. Add administrator setup and versioned PBKDF2 password hashes.
+- Bound central configuration retrieval, preserve the last valid runtime copy
+  during outages, and display configuration status in Help. Support immutable
+  HTTPS/required-configuration policy and detached configuration signatures.
+- Add signed release manifests, package inventories, local boot/RAM measurements,
+  Prometheus server metrics, hardware export, and MAC-targeted canary preparation.
+- Separate reusable dialogs and GTK styling from the connection-manager logic.
 
 - Added a built-in PXE HTTP status dashboard, JSON status API, and dedicated
   health endpoint with active-transfer progress and recent client IP/MAC

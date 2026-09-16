@@ -11,8 +11,9 @@ import time
 import unittest
 
 
-SCRIPT = (Path(__file__).resolve().parents[1] /
-          "overlay/usr/local/sbin/tc-cache-save")
+REPO_SCRIPT = (Path(__file__).resolve().parents[1] /
+               "overlay/usr/local/sbin/tc-cache-save")
+SCRIPT = REPO_SCRIPT if REPO_SCRIPT.is_file() else Path("/usr/local/sbin/tc-cache-save")
 
 
 @unittest.skipUnless(os.name == "posix", "requires a POSIX shell")
@@ -65,22 +66,86 @@ esac
         path.write_text(text, encoding="utf-8")
         path.chmod(0o755)
 
+    def environment(self):
+        return dict(os.environ, PATH="%s:/usr/bin:/bin" % self.bin,
+                    TC_CACHE_CMDLINE_FILE=str(self.cmdline),
+                    TC_CACHE_STATUS_FILE=str(self.init_status),
+                    TC_CACHE_LIVE_MEDIUM=str(self.live),
+                    TC_CACHE_MOUNT_DIR=str(self.mount),
+                    TC_CACHE_SAVE_STATUS_FILE=str(self.run / "cache-status"),
+                    TC_CACHE_BOOT_STATUS_FILE=str(self.run / "cache-boot-status"),
+                    TC_CACHE_PROGRESS_FILE=str(self.run / "cache-progress"))
+
+    def test_cache_hit_publishes_readable_boot_status_without_copying(self):
+        self.init_status.write_text("state=hit\nprofile=lite\n")
+        self.source.unlink()
+        result = subprocess.run(["/bin/sh", str(SCRIPT)], env=self.environment(),
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        status = self.run / "cache-boot-status"
+        self.assertEqual("state=hit\nprofile=lite\n", status.read_text())
+        self.assertEqual(0o644, stat.S_IMODE(status.stat().st_mode))
+
+    def assert_failed_write_preserves_cache(self, writer, sync=None):
+        directory = self.mount / "thinclient-cache/lite"
+        directory.mkdir(parents=True)
+        previous = directory / ("a" * 64 + ".squashfs")
+        previous.write_bytes(b"previous verified image")
+        self._program("tee", writer)
+        if sync:
+            self._program("sync", sync)
+        result = subprocess.run(["/bin/sh", str(SCRIPT)], env=self.environment(),
+                                capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(0, result.returncode, result.stdout)
+        self.assertEqual(b"previous verified image", previous.read_bytes())
+        self.assertFalse((directory / (self.digest + ".squashfs")).exists())
+        self.assertFalse(any(directory.glob("*.part.*")))
+        self.assertIn("state=failed", (self.run / "cache-status").read_text())
+        self.assertFalse((self.run / "cache-progress").exists())
+
+    def test_full_device_does_not_publish_input_hash_as_verified_cache(self):
+        self.assert_failed_write_preserves_cache(
+            '#!/bin/sh\nexec /usr/bin/tee /dev/full\n')
+
+    def test_truncated_write_with_success_exit_is_rejected(self):
+        self.assert_failed_write_preserves_cache(
+            '#!/bin/sh\nprintf truncated > "$1"\ncat >/dev/null\n')
+
+    def test_disconnected_device_is_rejected(self):
+        self.assert_failed_write_preserves_cache(
+            '#!/bin/sh\ncat >/dev/null\nrm -f -- "$1"\nexit 1\n')
+
+    def test_flush_failure_preserves_previous_cache(self):
+        self.assert_failed_write_preserves_cache(
+            '#!/bin/sh\nexec /usr/bin/tee "$@"\n', '#!/bin/sh\nexit 1\n')
+
+    def test_termination_cleans_partial_cache(self):
+        # Terminate during a slow write, without mounting or modifying a device.
+        self._program("tee", '#!/bin/sh\nexec sleep 30\n')
+        process = subprocess.Popen(["/bin/sh", str(SCRIPT)], env=self.environment(),
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 3
+            while not (self.run / "cache-progress").exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue((self.run / "cache-progress").exists())
+            process.terminate()
+            process.communicate(timeout=5)
+            self.assertNotEqual(0, process.returncode)
+            self.assertFalse(any(self.mount.rglob("*.part.*")))
+            self.assertIn("interrupted", (self.run / "cache-status").read_text())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
     def test_progress_is_atomic_and_success_is_verified(self):
         progress = self.run / "cache-progress"
         saved = self.run / "cache-status"
         victim = self.temp / "must-not-be-overwritten"
         victim.write_text("protected\n", encoding="utf-8")
         saved.symlink_to(victim)
-        env = os.environ.copy()
-        env.update({
-            "PATH": "%s:/usr/bin:/bin" % self.bin,
-            "TC_CACHE_CMDLINE_FILE": str(self.cmdline),
-            "TC_CACHE_STATUS_FILE": str(self.init_status),
-            "TC_CACHE_LIVE_MEDIUM": str(self.live),
-            "TC_CACHE_MOUNT_DIR": str(self.mount),
-            "TC_CACHE_SAVE_STATUS_FILE": str(saved),
-            "TC_CACHE_PROGRESS_FILE": str(progress),
-        })
+        env = self.environment()
         process = subprocess.Popen(
             ["/bin/sh", str(SCRIPT)], env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

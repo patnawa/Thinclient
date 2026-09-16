@@ -1,0 +1,9 @@
+# The server image needs only these two source files. Never send generated
+# client images, site configuration, credentials or test captures to Docker.
+**
+!tools/
+!tools/tc-config-server.py
+!deploy/
+!deploy/docker-pxe/
+!deploy/docker-pxe/Dockerfile
+!deploy/docker-pxe/container-entrypoint.sh

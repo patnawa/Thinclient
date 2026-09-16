@@ -10,6 +10,7 @@ build_command computes them, or the test could never disagree with the code.
 """
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -178,6 +179,30 @@ class ConfigLayering(unittest.TestCase):
 
         self.assertEqual("Asia/Bangkok", cfg["device"]["timezone"])
         self.assertEqual("th", cfg["device"]["keyboard_layout"])
+
+
+class PasswordMigration(unittest.TestCase):
+    def test_new_hash_is_salted_and_verifies(self):
+        first = tcconfig.hash_password("administrator-test-passphrase")
+        second = tcconfig.hash_password("administrator-test-passphrase")
+        self.assertTrue(first.startswith("pbkdf2-sha256$600000$"))
+        self.assertNotEqual(first, second)
+        self.assertTrue(tcconfig.verify_password(first, "administrator-test-passphrase"))
+        self.assertFalse(tcconfig.verify_password(first, "incorrect"))
+
+    def test_legacy_hash_and_plain_configuration_remain_readable(self):
+        legacy = "sha256$salt$" + hashlib.sha256(b"saltpassword").hexdigest()
+        self.assertTrue(tcconfig.verify_password(legacy, "password"))
+        self.assertFalse(tcconfig.verify_password(legacy, "wrong"))
+        self.assertTrue(tcconfig.verify_password("old-password", "old-password"))
+
+    def test_malformed_and_unbounded_work_factors_are_rejected(self):
+        for rounds in ("invalid", "1", "999999999"):
+            stored = "pbkdf2-sha256$%s$%s$%s" % (rounds, "ab" * 16, "ab" * 32)
+            with mock.patch.object(tcconfig.hashlib, "pbkdf2_hmac") as derive:
+                self.assertFalse(tcconfig.verify_password(stored, "password"))
+                derive.assert_not_called()
+        self.assertFalse(tcconfig.verify_password("pbkdf2-sha256$bad", "password"))
 
 
 if __name__ == "__main__":

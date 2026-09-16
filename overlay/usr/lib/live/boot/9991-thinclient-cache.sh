@@ -21,6 +21,7 @@ tc_cache_parameters()
 	[ "$(tc_cache_arg tc.cache 2>/dev/null || true)" = "1" ] || return 1
 	TC_CACHE_PROFILE="$(tc_cache_arg tc.cache.profile 2>/dev/null || true)"
 	TC_CACHE_SHA256="$(tc_cache_arg tc.cache.sha256 2>/dev/null || true)"
+	[ -z "${TC_TRUST_SHA256:-}" ] || TC_CACHE_SHA256="$TC_TRUST_SHA256"
 	TC_CACHE_LABEL="$(tc_cache_arg tc.cache.label 2>/dev/null || echo TCCACHE)"
 	TC_CACHE_SHA256="$(printf '%s' "$TC_CACHE_SHA256" | tr 'A-F' 'a-f')"
 
@@ -86,7 +87,13 @@ tc_cache_restore()
 				continue
 			}
 			mkdir -p "$(dirname "$destination")"
-			actual="$(tee "$destination" < "$cache_file" | sha256sum | sed 's/[[:space:]].*$//')"
+			# Hash the destination only after the copy succeeds. Hashing tee's
+			# stdout can hide a failed destination write.
+			actual=""
+			if cp "$cache_file" "$destination"; then
+				actual="$(sha256sum "$destination")" || actual=""
+				actual="${actual%% *}"
+			fi
 			if [ "$actual" = "$TC_CACHE_SHA256" ]; then
 				tc_cache_record hit "$cache_device"
 				umount "$cache_mount" 2>/dev/null || true
@@ -104,8 +111,29 @@ tc_cache_restore()
 	return 1
 }
 
+tc_verify_release_manifest()
+{
+	[ -f /etc/thinclient/release.pub ] || return 0
+	# The verifier and its public key must themselves arrive via a trusted
+	# initramfs. A signature inside an attacker-replaceable initrd is not a
+	# complete Secure Boot chain; deployment documentation states this boundary.
+	mkdir -p /run/initramfs
+	base="${FETCH%/*}"
+	wget -q -T 5 -O /run/initramfs/tc-manifest "$base/manifest.sha256" || return 1
+	wget -q -T 5 -O /run/initramfs/tc-manifest.sig "$base/manifest.sha256.sig" || return 1
+	openssl dgst -sha256 -verify /etc/thinclient/release.pub \
+		-signature /run/initramfs/tc-manifest.sig /run/initramfs/tc-manifest \
+		>/dev/null 2>&1 || return 1
+	TC_TRUST_SHA256="$(awk '$2 == "filesystem.squashfs" {print $1}' /run/initramfs/tc-manifest)"
+	printf '%s' "$TC_TRUST_SHA256" | grep -Eq '^[0-9a-f]{64}$'
+}
+
 do_httpmount()
 {
+	if ! tc_verify_release_manifest; then
+		echo "ThinClient: release signature could not be verified; refusing root image" > /dev/console
+		return 1
+	fi
 	if tc_cache_restore
 	then
 		return 0
@@ -113,6 +141,14 @@ do_httpmount()
 
 	do_httpmount_network
 	rc=$?
+	if [ "$rc" -eq 0 ] && [ -n "${TC_TRUST_SHA256:-}" ]; then
+		root_file="${mountpoint}/${LIVE_MEDIA_PATH}/$(basename "$FETCH")"
+		root_hash="$(sha256sum "$root_file")" || return 1
+		[ "${root_hash%% *}" = "$TC_TRUST_SHA256" ] || {
+			echo "ThinClient: downloaded root does not match signed release" > /dev/console
+			return 1
+		}
+	fi
 	if [ "$rc" -eq 0 ] && tc_cache_parameters
 	then
 		tc_cache_record network

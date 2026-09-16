@@ -44,7 +44,7 @@ DEVICE_DEFAULTS = {
     "auto_connect": "",
     "allow_settings": True,
     "allow_console": False,
-    "allow_terminal": True,
+    "allow_terminal": False,
     "session_bar": True,
     "show_ip": True,
 }
@@ -87,7 +87,7 @@ CONNECTION_DEFAULTS = {
     "gateway_domain": "",
     "app": "",
     "display": "fullscreen",     # fullscreen | multimon | window | <W>x<H>
-    "cert_policy": "ignore",     # ignore | tofu | strict
+    "cert_policy": "strict",     # strict | tofu | ignore (explicit compatibility)
     "security": "auto",          # auto | nla | tls | rdp
     "gfx": "auto",               # auto | avc444 | avc420 | rfx | none
     "network": "auto",           # auto | lan | broadband | modem
@@ -219,7 +219,7 @@ def _normalise_connection(raw):
     for key, choices in CONNECTION_ENUMS.items():
         default = CONNECTION_DEFAULTS[key]
         supplied = raw.get(key)
-        # Missing/blank retains the historical appliance default. An explicit
+        # Missing/blank uses system trust. An explicit
         # but invalid certificate policy must fail closed: before validation
         # existed, an unknown value emitted no /cert override and FreeRDP used
         # normal system trust. Falling back to "ignore" here would weaken a
@@ -295,6 +295,15 @@ def load(layers=None):
     connection_ids = {conn["id"] for conn in normalised}
     if cfg["device"]["auto_connect"] not in connection_ids:
         cfg["device"]["auto_connect"] = ""
+    if layers is None:
+        policy = _read("/etc/thinclient/policy.json")
+        invalid_policy = not isinstance(policy, dict) and os.path.exists("/etc/thinclient/policy.json")
+        policy = policy if isinstance(policy, dict) else {}
+        status = _read(os.path.join(RUNDIR, "config-status.json")) or {}
+        if invalid_policy or (policy.get("config_required") and status.get("state") not in ("current", "stale")):
+            cfg["connections"] = []
+            cfg["device"]["auto_connect"] = ""
+            cfg["configuration_blocked"] = True
     return cfg
 
 
@@ -420,14 +429,26 @@ def save(cfg):
 
 # --------------------------------------------------------------- passwords --
 def hash_password(plain):
-    """Salted SHA-256. Gates the settings UI; not a boundary against physical access."""
-    salt = secrets.token_hex(8)
-    return "sha256$%s$%s" % (salt, hashlib.sha256((salt + plain).encode()).hexdigest())
+    """Versioned password hash; old installations remain readable below."""
+    salt = secrets.token_hex(16)
+    iterations = 600000
+    digest = hashlib.pbkdf2_hmac("sha256", plain.encode(), bytes.fromhex(salt), iterations)
+    return "pbkdf2-sha256$%s$%s$%s" % (iterations, salt, digest.hex())
 
 
 def verify_password(stored, plain):
     if not stored:
         return True
+    if stored.startswith("pbkdf2-sha256$"):
+        try:
+            _, rounds, salt, digest = stored.split("$")
+            rounds = int(rounds)
+            if not 100000 <= rounds <= 2000000 or len(salt) != 32 or len(digest) != 64:
+                return False
+            actual = hashlib.pbkdf2_hmac("sha256", plain.encode(), bytes.fromhex(salt), rounds)
+            return secrets.compare_digest(actual.hex(), digest)
+        except (ValueError, TypeError):
+            return False
     if stored.startswith("sha256$"):
         try:
             _, salt, digest = stored.split("$", 2)
@@ -744,7 +765,7 @@ def build_command(conn, device, password=None, debug=False):
         argv += ["/size:1280x800"]
 
     # --- security ------------------------------------------------------------
-    policy = (conn.get("cert_policy") or "ignore").lower()
+    policy = (conn.get("cert_policy") or "strict").lower()
     if policy == "ignore":
         argv.append("/cert:ignore")
     elif policy == "tofu":

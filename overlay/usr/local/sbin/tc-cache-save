@@ -8,27 +8,35 @@ LIVE_MEDIUM="${TC_CACHE_LIVE_MEDIUM:-/run/live/medium}"
 CACHE_MOUNT="${TC_CACHE_MOUNT_DIR:-/run/thinclient/cache-media}"
 SAVE_STATUS_FILE="${TC_CACHE_SAVE_STATUS_FILE:-/run/thinclient/cache-status}"
 PROGRESS_FILE="${TC_CACHE_PROGRESS_FILE:-/run/thinclient/cache-progress}"
+BOOT_STATUS_FILE="${TC_CACHE_BOOT_STATUS_FILE:-/run/thinclient/cache-boot-status}"
 MOUNTED=0
 TEMP_FILE=""
-HASH_FILE=""
 COPY_PID=""
 PROGRESS_TEMP=""
 STATUS_TEMP=""
+FAILURE="cache write failed"
+STARTED="$(date +%s)"
 
 log() { echo "tc-cache-save: $*"; }
 cleanup() {
+    result=$?
     if [ -n "$COPY_PID" ]; then
         kill "$COPY_PID" 2>/dev/null || true
         wait "$COPY_PID" 2>/dev/null || true
     fi
     [ -z "$TEMP_FILE" ] || rm -f -- "$TEMP_FILE"
-    [ -z "$HASH_FILE" ] || rm -f -- "$HASH_FILE"
     [ -z "$PROGRESS_TEMP" ] || rm -f -- "$PROGRESS_TEMP"
     [ -z "$STATUS_TEMP" ] || rm -f -- "$STATUS_TEMP"
     rm -f -- "$PROGRESS_FILE"
     [ "$MOUNTED" -eq 0 ] || umount "$CACHE_MOUNT" 2>/dev/null || true
+    if [ "$result" -ne 0 ] && [ -n "${PROFILE:-}" ]; then
+        write_saved_status failed "$FAILURE" || true
+    fi
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'FAILURE="cache write interrupted"; exit 129' HUP
+trap 'FAILURE="cache write interrupted"; exit 130' INT
+trap 'FAILURE="cache write interrupted"; exit 143' TERM
 
 write_progress() {
     percent="$1"
@@ -44,7 +52,7 @@ write_progress() {
         printf 'device=%s\n' "$DEVICE"
     } > "$PROGRESS_TEMP" || return 1
     chmod 0644 "$PROGRESS_TEMP" 2>/dev/null || true
-    mv -f -- "$PROGRESS_TEMP" "$PROGRESS_FILE" || return 1
+    mv -fT -- "$PROGRESS_TEMP" "$PROGRESS_FILE" || return 1
     PROGRESS_TEMP=""
 }
 
@@ -52,13 +60,15 @@ write_saved_status() {
     mkdir -p "$(dirname "$SAVE_STATUS_FILE")"
     STATUS_TEMP="$(mktemp "${SAVE_STATUS_FILE}.tmp.XXXXXX")" || return 1
     {
-        printf 'state=saved\n'
+        printf 'state=%s\n' "${1:-saved}"
         printf 'profile=%s\n' "$PROFILE"
-        printf 'sha256=%s\n' "$EXPECTED"
-        printf 'device=%s\n' "$DEVICE"
+        printf 'sha256=%s\n' "${EXPECTED:-}"
+        printf 'device=%s\n' "${DEVICE:-}"
+        printf 'duration_seconds=%s\n' "$(( $(date +%s) - STARTED ))"
+        [ -z "${2:-}" ] || printf 'reason=%s\n' "$2"
     } > "$STATUS_TEMP" || return 1
     chmod 0644 "$STATUS_TEMP" 2>/dev/null || true
-    mv -f -- "$STATUS_TEMP" "$SAVE_STATUS_FILE" || return 1
+    mv -fT -- "$STATUS_TEMP" "$SAVE_STATUS_FILE" || return 1
     STATUS_TEMP=""
 }
 
@@ -85,6 +95,17 @@ printf '%s' "$EXPECTED" | grep -Eq '^[0-9a-f]{64}$' || { log "invalid checksum";
 # A cache hit needs no write. A network result is saved in the background once
 # the normal boot is already usable.
 STATE="$(sed -n 's/^state=//p' "$STATUS_FILE" 2>/dev/null | head -1)"
+# /run/initramfs is root-only on Debian. Publish only the non-secret boot state
+# for the kiosk UI before the cache-hit early return (no disk write is needed).
+case "$STATE" in
+    hit|network|miss)
+        STATUS_TEMP="$(mktemp "${BOOT_STATUS_FILE}.tmp.XXXXXX")" || exit 1
+        printf 'state=%s\nprofile=%s\n' "$STATE" "$PROFILE" > "$STATUS_TEMP" || exit 1
+        chmod 0644 "$STATUS_TEMP" || exit 1
+        mv -fT -- "$STATUS_TEMP" "$BOOT_STATUS_FILE" || exit 1
+        STATUS_TEMP=""
+        ;;
+esac
 [ "$STATE" != hit ] || { log "$PROFILE cache hit"; exit 0; }
 SOURCE="$LIVE_MEDIUM/live/$(basename "$FETCH_URL")"
 [ -f "$SOURCE" ] || { log "downloaded squashfs is not available at $SOURCE"; exit 1; }
@@ -128,9 +149,10 @@ for DEVICE in $(blkid -t "LABEL=$LABEL" -o device 2>/dev/null | sort -u); do
     log "saving $PROFILE to $DEVICE"
     mkdir -p "$(dirname "$PROGRESS_FILE")"
     TOTAL_BYTES="$(wc -c < "$SOURCE" | tr -d '[:space:]')"
-    HASH_FILE="$(mktemp "$(dirname "$PROGRESS_FILE")/cache-hash.XXXXXX")" || exit 1
-    write_progress 0 0 "$TOTAL_BYTES"
-    (tee "$TEMP_FILE" < "$SOURCE" | sha256sum > "$HASH_FILE") &
+    write_progress 0 0 "$TOTAL_BYTES" || exit 1
+    # Check the writer itself. A tee | sha256sum pipeline can successfully hash
+    # every input byte even when tee cannot write to a full or removed USB.
+    tee "$TEMP_FILE" < "$SOURCE" > /dev/null &
     COPY_PID=$!
     while kill -0 "$COPY_PID" 2>/dev/null; do
         COPIED_BYTES="$(wc -c < "$TEMP_FILE" 2>/dev/null | tr -d '[:space:]')"
@@ -141,24 +163,25 @@ for DEVICE in $(blkid -t "LABEL=$LABEL" -o device 2>/dev/null | sort -u); do
         else
             PERCENT=0
         fi
-        write_progress "$PERCENT" "$COPIED_BYTES" "$TOTAL_BYTES"
+        write_progress "$PERCENT" "$COPIED_BYTES" "$TOTAL_BYTES" || exit 1
         sleep 1
     done
     wait "$COPY_PID" || { COPY_PID=""; log "cache copy failed"; exit 1; }
     COPY_PID=""
-    ACTUAL="$(sed 's/[[:space:]].*$//' "$HASH_FILE")"
-    rm -f -- "$HASH_FILE"
-    HASH_FILE=""
-    write_progress 100 "$TOTAL_BYTES" "$TOTAL_BYTES"
+    FAILURE="cache could not be flushed to storage"
+    sync -f "$TEMP_FILE" || exit 1
+    FAILURE="saved cache checksum mismatch"
+    ACTUAL="$(sha256sum "$TEMP_FILE")" || exit 1
+    ACTUAL="${ACTUAL%% *}"
     if [ "$ACTUAL" != "$EXPECTED" ]; then
-        log "downloaded squashfs checksum mismatch; cache was not changed"
+        log "$FAILURE; previous cache was not changed"
         exit 1
     fi
-    chmod 0400 "$TEMP_FILE" 2>/dev/null || true
-    sync -f "$TEMP_FILE" 2>/dev/null || sync
-    mv -f -- "$TEMP_FILE" "$TARGET" || exit 1
+    FAILURE="cache could not be published"
+    chmod 0400 "$TEMP_FILE" || exit 1
+    mv -fT -- "$TEMP_FILE" "$TARGET" || exit 1
     TEMP_FILE=""
-    sync -f "$CACHE_DIR" 2>/dev/null || sync
+    sync -f "$CACHE_DIR" || exit 1
 
     # The PXE server remains the rollback source, so retain only the currently
     # advertised version and prevent a small USB from filling over time.

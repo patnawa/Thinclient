@@ -32,7 +32,7 @@ USE_PREBUILT=0
 if [ -n "${PXE_IMAGE:-}" ]; then
     USE_PREBUILT=1
 else
-    PXE_IMAGE=thinclient-pxe-server:1.4.1
+    PXE_IMAGE=thinclient-pxe-server:1.5.0
 fi
 
 case "$HTTP_HOST" in
@@ -71,9 +71,17 @@ if [ -d "$PXE_ROOT/thinclient/lite" ]; then
     for profile in lite full; do
         (cd "$PXE_ROOT/thinclient/$profile" && sha256sum -c filesystem.squashfs.sha256 >/dev/null) \
             || die "$profile squashfs checksum does not match its sidecar"
+        if [ -f "$PXE_ROOT/thinclient/$profile/manifest.sha256" ]; then
+            python3 "$REPO/tools/verification-receipt.py" check "$PXE_ROOT/thinclient/$profile" \
+                || die "$profile has not passed the release boot gate"
+        fi
     done
 else
     [ -r "$PXE_ROOT/thinclient/filesystem.squashfs" ] || die "filesystem.squashfs is missing or unreadable"
+    if [ -f "$PXE_ROOT/thinclient/manifest.sha256" ]; then
+        python3 "$REPO/tools/verification-receipt.py" check "$PXE_ROOT/thinclient" \
+            || die "this image has not passed the release boot gate"
+    fi
 fi
 
 bash "$PXE_ROOT/render-configs.sh" "$HTTP_HOST:$HTTP_PORT" --tftp-first

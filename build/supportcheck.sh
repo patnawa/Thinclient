@@ -14,11 +14,7 @@ ROOTFS="$WORKDIR/rootfs"
 [ "$(stat -c '%a:%u' "$ROOTFS/etc/systemd/system/ssh.service.d")" = "755:0" ]
 [ "$(stat -c '%a:%u' "$ROOTFS/etc/systemd/system/ssh.service.d/10-thinclient-support.conf")" = "644:0" ]
 
-# Test the current source helper, not a potentially stale copy from an older
-# build, while retaining the built image's users, sshd, and configuration.
-sed 's/\r$//' "$REPO/overlay/usr/local/sbin/tc-prepare-support" \
-  > "$ROOTFS/usr/local/sbin/tc-prepare-support"
-chmod 0755 "$ROOTFS/usr/local/sbin/tc-prepare-support"
+# Exercise the helper shipped in the supplied artifact, without source overlays.
 
 mounted=0
 systemctl_bound=0

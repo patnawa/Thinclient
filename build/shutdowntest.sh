@@ -12,7 +12,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
 TABS="${1:-4}"
-OUT="$REPO/out/shutdowntest"
+OUT="${SHUTDOWNTEST_OUT:-$REPO/out/shutdowntest}"
 MON=/tmp/tc-shutdown-monitor.sock
 
 [ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
@@ -22,6 +22,9 @@ pkill -f 'tc-shutdown-monitor' 2>/dev/null; sleep 1
 ACCEL=(); [ -w /dev/kvm ] && ACCEL=(-enable-kvm -cpu host)
 
 qemu-system-x86_64 "${ACCEL[@]}" -m 2560 -smp 4 \
+    -device virtio-serial-pci \
+    -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
+    -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -cdrom "$ISO" -boot d -vga std \
     -netdev user,id=net0 -device e1000,netdev=net0 \
     -display none -monitor "unix:$MON,server,nowait" \
@@ -48,16 +51,16 @@ mon() { python3 /tmp/tc-mon2.py "$MON" "$@" >/dev/null 2>&1; }
 echo "waiting for the connection manager..."
 # Full-driver images and old CPUs can spend well over 40 seconds unpacking the
 # live root. Sending keys to a black boot screen makes the test fail for the
-# wrong reason, so wait for a materially rendered GUI (with a hard deadline).
+# wrong reason, so wait for the mapped-window event (with a hard deadline).
 LAST=0
 READY=0
-for ELAPSED in 60 75 90 105 120; do
+for ELAPSED in 20 40 60 90 120 150; do
     sleep $((ELAPSED - LAST)); LAST=$ELAPSED
     kill -0 "$QEMU" 2>/dev/null || break
     mon "screendump $OUT/1-manager.ppm"
     BRIGHTNESS=$(convert "$OUT/1-manager.ppm" -format '%[fx:int(mean*255)]' info: 2>/dev/null || echo 0)
     echo "  t=${ELAPSED}s  brightness $BRIGHTNESS"
-    if [ "${BRIGHTNESS:-0}" -ge 20 ]; then
+    if grep -q '"event": "ui_ready"' "$OUT/ready.jsonl"; then
         READY=1
         break
     fi

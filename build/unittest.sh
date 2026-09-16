@@ -1,57 +1,42 @@
 #!/bin/bash
-# Run the unit tests against the module as installed in the built image.
-#
-# Running them inside the rootfs rather than on the build host means they use
-# the real tcconfig.py and the real FreeRDP binary that shipped, so a test can
-# never pass against a module the client does not actually have.
-#
-#   sudo bash build/unittest.sh            # all tests
-#   sudo bash build/unittest.sh TargetAddress    # one class or method
-set -u
-
+# Source: bash build/unittest.sh [test-filter]
+# Artifact: sudo bash build/unittest.sh --image out/pxe/thinclient/filesystem.squashfs
+# The image lane never overlays source onto the code under test.
+set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-source "$REPO/build/config.sh"
-ROOTFS="$WORKDIR/rootfs"
-[ -d "$ROOTFS" ] || { echo "no rootfs at $ROOTFS - run build.sh first"; exit 1; }
-
-# Sync the library under test from the overlay so a red-green cycle does not
-# need a full image rebuild. build.sh copies the same files, so what runs here
-# is what ships.
-for f in "$REPO"/overlay/usr/local/lib/thinclient/*.py; do
-    sed 's/\r$//' "$f" > "$ROOTFS/usr/local/lib/thinclient/$(basename "$f")"
-done
-# Several safety tests exercise Python entry points as well as the importable
-# library. Keep those in sync for the same quick red-green cycle.
-for f in "$REPO"/overlay/usr/local/bin/tc-connect \
-         "$REPO"/overlay/usr/local/sbin/tc-apply-config \
-         "$REPO"/overlay/usr/local/sbin/tc-install; do
-    destination="$ROOTFS/${f#$REPO/overlay/}"
-    sed 's/\r$//' "$f" > "$destination"
-done
-
-install -d "$ROOTFS/opt/tests"
-# tests/ holds the tests; test/ holds admin tools that some of them cover.
-for f in "$REPO"/tests/*.py "$REPO"/test/*.py; do
-    [ -f "$f" ] || continue
-    sed 's/\r$//' "$f" > "$ROOTFS/opt/tests/$(basename "$f")"
-done
-
-# The deployment server is intentionally host-side, but exercising it in the
-# image test environment catches Python-version and stdlib differences too.
-install -d "$ROOTFS/opt/tools"
-sed 's/\r$//' "$REPO/tools/tc-config-server.py" \
-    > "$ROOTFS/opt/tools/tc-config-server.py"
-
-if [ "$#" -gt 0 ]; then
-    chroot "$ROOTFS" /usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LC_ALL=C \
-        PYTHONDONTWRITEBYTECODE=1 \
-        /usr/bin/python3 -m unittest discover -s /opt/tests -t /opt/tests -v -k "$1"
-else
-    chroot "$ROOTFS" /usr/bin/env -i PATH=/usr/bin:/bin HOME=/root LC_ALL=C \
-        PYTHONDONTWRITEBYTECODE=1 \
-        /usr/bin/python3 -m unittest discover -s /opt/tests -t /opt/tests -v
+if [ "${1:-}" != --image ] && [ -z "${TC_TEST_ROOTFS:-}" ]; then
+    cd "$REPO"
+    args=()
+    [ "$#" -eq 0 ] || args=(-k "$1")
+    exec env PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v "${args[@]}"
 fi
-status=$?
 
-rm -rf "$ROOTFS/opt/tests" "$ROOTFS/opt/tools"
-exit "$status"
+TEMP=""
+cleanup() { [ -z "$TEMP" ] || rm -rf -- "$TEMP"; }
+trap cleanup EXIT
+if [ "${1:-}" = --image ]; then
+    [ "$#" -ge 2 ] && [ -f "$2" ] || { echo 'supply an existing squashfs' >&2; exit 2; }
+    TEMP="$(mktemp -d "${TC_TEST_TMPDIR:-/var/tmp}/thinclient-unittest.XXXXXX")"
+    ROOTFS="$TEMP/rootfs"
+    unsquashfs -no-progress -d "$ROOTFS" "$2" >/dev/null
+    shift 2
+else
+    ROOTFS="$TC_TEST_ROOTFS"
+fi
+[ "$(id -u)" = 0 ] || { echo 'image tests require root' >&2; exit 2; }
+[ -x "$ROOTFS/usr/bin/python3" ] || { echo 'invalid test rootfs' >&2; exit 2; }
+# Only test fixtures/tools are staged. /opt/overlay resolves to the extracted
+# artifact, so tests with checkout-relative paths still use the shipped files.
+for directory in tests test tools build pxe; do
+    install -d "$ROOTFS/opt/$directory"
+    while IFS= read -r -d '' file; do
+        case "$file" in *.py|*.sh) sed 's/\r$//' "$file" > "$ROOTFS/opt/$directory/$(basename "$file")" ;; esac
+    done < <(find "$REPO/$directory" -maxdepth 1 -type f ! -name '*.local.sh' -print0)
+done
+ln -s / "$ROOTFS/opt/overlay"
+ln -s /usr/share/thinclient/CHANGELOG.md "$ROOTFS/opt/CHANGELOG.md"
+args=()
+[ "$#" -eq 0 ] || args=(-k "$1")
+chroot "$ROOTFS" /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root \
+    LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 -m unittest discover -s /opt/tests -t /opt/tests -v "${args[@]}"

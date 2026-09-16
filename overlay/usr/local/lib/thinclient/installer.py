@@ -11,12 +11,13 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
+import os  # noqa: E402
 import subprocess  # noqa: E402
 import sys  # noqa: E402
 import threading  # noqa: E402
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
-from manager import CSS  # noqa: E402  - one visual language for the whole product
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from uicommon import CSS  # noqa: E402
 
 INSTALLER = "/usr/local/sbin/tc-install"
 

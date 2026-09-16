@@ -8,7 +8,7 @@
 approved connections, and gets out of the user's way.</p>
 
 <p>
-  <a href="build/config.sh"><img alt="Release 1.4.1" src="https://img.shields.io/badge/release-1.4.1-3478f6?style=flat-square"></a>
+  <a href="https://github.com/patnawa/Thinclient/releases/tag/v1.5.0"><img alt="Release 1.5.0" src="https://img.shields.io/badge/release-1.5.0-3478f6?style=flat-square"></a>
   <a href="https://www.debian.org/"><img alt="Debian 13" src="https://img.shields.io/badge/Debian-13%20trixie-a81d33?style=flat-square&amp;logo=debian&amp;logoColor=white"></a>
   <a href="https://www.freerdp.com/"><img alt="FreeRDP 3" src="https://img.shields.io/badge/FreeRDP-3-2b6cb0?style=flat-square"></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22a06b?style=flat-square"></a>
@@ -57,6 +57,11 @@ power on ──▶ BIOS / UEFI / Secure Boot ──▶ connection manager ──
 
 ## Quick start
 
+Download the [1.5.0 release ISOs and SHA-256 checksums](https://github.com/patnawa/Thinclient/releases/tag/v1.5.0):
+**Lite** for wired clients, or **Full Drivers** for Wi-Fi and additional peripherals.
+Public images contain factory defaults, not a site's configuration or signing keys.
+Configure your server address and administrator password before deployment.
+
 On Debian or Ubuntu (including Debian under WSL2):
 
 ```bash
@@ -66,7 +71,7 @@ sudo bash build/build.sh
 sudo bash build/verify-all.sh
 ```
 
-The result is `out/thinclient-amd64-1.4.1.iso`. See [Building](#building) for host
+The default build produces `out/thinclient-amd64-1.5.0.iso`. See [Building](#building) for host
 prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 [internal disk](#installing-to-a-clients-internal-disk), or
 [PXE](#deploying-by-pxe) deployment.
@@ -81,6 +86,7 @@ prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 | `deploy/docker-pxe/` | TFTP + HTTP Docker Compose deployment for a Debian PXE host. |
 | `docs/PROJECT-ROADMAP.md` | Durable release checklist, design guardrails, and prioritized improvements. |
 | `CHANGELOG.md` | Release history shown both on GitHub and inside Help → What's new. |
+| [`docs/RELEASE-OPERATIONS.md`](docs/RELEASE-OPERATIONS.md) | Signed artifacts, final-image boot gates, public releases, staged deployment and rollback. |
 | `out/` | Build output: the ISO, the PXE tree, and test screenshots. Created by the build. |
 
 ---
@@ -172,7 +178,7 @@ sudo bash build/build.sh
 Verify the completed artifact before deployment:
 
 ```bash
-(cd out && sha256sum -c thinclient-amd64-1.4.1.iso.sha256)
+(cd out && sha256sum -c thinclient-amd64-1.5.0.iso.sha256)
 ```
 
 First build takes 15–30 minutes (it downloads a full Debian base plus packages).
@@ -255,8 +261,8 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.4.1.iso     hybrid ISO: burn it, or dd it to a USB stick
-  thinclient-amd64-1.4.1.iso.sha256  exact release integrity/identity digest
+  thinclient-amd64-1.5.0.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.5.0.iso.sha256  exact release integrity/identity digest
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -388,7 +394,7 @@ embedded `TCCONF` to be writable.
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.4.1.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.5.0.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -598,12 +604,12 @@ menus to the Debian host, and documents the exact legacy ISC DHCP fields:
 sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
 
-The helper builds `thinclient-pxe-server:1.4.1` locally. To use the published
+The helper builds `thinclient-pxe-server:1.5.0` locally. To use the release
 container from GitHub Container Registry instead:
 
 ```bash
-sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.4.1
-sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.4.1 \
+sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.5.0
+sudo env PXE_IMAGE=ghcr.io/patnawa/thinclient-pxe-server:1.5.0 \
   bash deploy/docker-pxe/deploy.sh \
   192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```

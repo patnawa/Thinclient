@@ -18,7 +18,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 MODE="${1:-bios}"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
-OUT="$REPO/out/boottest-$MODE"
+OUT="${BOOTTEST_OUT:-$REPO/out/boottest-$MODE}"
 MON=/tmp/tc-qemu-monitor.sock
 
 [ -f "$ISO" ] || { echo "missing $ISO - run build.sh first"; exit 1; }
@@ -67,6 +67,9 @@ echo "booting $(basename "$ISO") in $MODE mode..."
 qemu-system-x86_64 \
     "${ACCEL[@]}" "${FIRMWARE[@]}" "${DIRECT[@]}" \
     -m 2560 -smp 4 \
+    -device virtio-serial-pci \
+    -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
+    -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -cdrom "$ISO" -boot d \
     -vga std \
     -netdev user,id=net0 -device e1000,netdev=net0 \
@@ -113,6 +116,11 @@ for T in 15 30 45 60 90 120 150; do
     sleep $((T - LAST)); LAST=$T
     kill -0 "$QEMU" 2>/dev/null || { echo "qemu exited early"; break; }
     shoot "$T"
+    if grep -q '"event": "ui_ready"' "$OUT/ready.jsonl"; then
+        sleep 2
+        shoot ready
+        break
+    fi
 done
 
 echo
@@ -123,4 +131,8 @@ kill -9 "$QEMU" 2>/dev/null
 
 echo "screenshots: $OUT/"
 ls -1 "$OUT"/*.png 2>/dev/null
-exit 0
+grep -q '"event": "ui_ready"' "$OUT/ready.jsonl" || {
+    echo 'FAIL: the connection manager did not report a mapped window' >&2
+    exit 1
+}
+echo 'PASS: the image reached its connection manager'

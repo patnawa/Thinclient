@@ -24,10 +24,14 @@ import tempfile  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 import tcconfig  # noqa: E402
 import uxstate  # noqa: E402
+import metrics
 from tcconfig import verify_password  # noqa: E402
+from uicommon import CSS, labelled, button, primary_ip, product_title
+from dialogs import (AboutDialog, HelpDialog, ChangelogDialog, AdminDialog,
+                     ConnectionProgressDialog, ConnectionErrorDialog, CredentialDialog)
 
 SESSION_LOG = "/run/thinclient/last-session.log"
 BUILD_INFO = "/etc/thinclient/build-info"
@@ -37,64 +41,6 @@ CHANGELOG_FILE = os.environ.get(
     "TC_CHANGELOG_FILE", "/usr/share/thinclient/CHANGELOG.md")
 GITHUB_URL = "https://github.com/patnawa/Thinclient"
 _HARDWARE_CACHE = None
-
-CSS = b"""
-window, .tc-root            { background-color: #16191d; }
-.tc-header                  { background-color: #0f1215; padding: 16px 24px; }
-.tc-title                   { color: #ffffff; font-size: 22px; font-weight: bold; }
-.tc-sub                     { color: #a5b0bd; font-size: 14px; }
-.tc-clock                   { color: #d7dde4; font-size: 17px; font-weight: bold; }
-.tc-net-good                { color: #79d69a; font-size: 14px; font-weight: bold; }
-.tc-net-bad                 { color: #ff9a92; font-size: 14px; font-weight: bold; }
-.tc-body-title              { color: #ffffff; font-size: 20px; font-weight: bold; }
-.tc-listlabel               { color: #a5b0bd; font-size: 13px; font-weight: bold;
-                              letter-spacing: 1px; margin-top: 8px; }
-list.tc-list                { background-color: transparent; }
-list.tc-list row            { background-color: #1f242a; border-radius: 8px;
-                              margin: 5px 0px; padding: 15px 18px; min-height: 46px; }
-list.tc-list row:selected   { background-color: #2f6fd0; }
-list.tc-list row.tc-group-row { background-color: transparent; padding: 4px 2px 0px 2px;
-                              margin: 0px; min-height: 22px; }
-.tc-conn-name               { color: #ffffff; font-size: 17px; font-weight: bold; }
-.tc-conn-desc               { color: #b3bdc8; font-size: 15px; }
-.tc-conn-badge              { color: #dbe8fb; font-size: 13px; font-weight: bold; }
-.tc-conn-ready              { color: #8ce3aa; font-size: 13px; }
-.tc-conn-offline            { color: #ffb0aa; font-size: 13px; }
-list.tc-list row:selected .tc-conn-desc,
-list.tc-list row:selected .tc-conn-ready,
-list.tc-list row:selected .tc-conn-offline { color: #ffffff; }
-.tc-status-box              { background-color: #202832; border-top: 1px solid #303a45;
-                              padding: 11px 24px; }
-.tc-status-box-bad          { background-color: #452522; border-top: 1px solid #713a35;
-                              padding: 11px 24px; }
-.tc-status                  { color: #e7edf4; font-size: 15px; font-weight: bold; }
-.tc-status-bad              { color: #ffd2ce; font-size: 15px; font-weight: bold; }
-.tc-auto                    { background-color: #243852; padding: 10px 16px;
-                              border-radius: 7px; }
-.tc-auto-label              { color: #ffffff; font-size: 15px; font-weight: bold; }
-.tc-bar                     { background-color: #0f1215; padding: 12px 24px; }
-button.tc-btn               { background-image: none; background-color: #262d35;
-                              color: #e6ebf0; border: 1px solid #333c46;
-                              border-radius: 6px; padding: 11px 20px; font-size: 16px;
-                              min-height: 22px; }
-button.tc-btn:hover         { background-color: #313a44; }
-button.tc-btn:focus, list.tc-list row:focus {
-                              box-shadow: inset 0 0 0 2px #f4f8ff; }
-button.tc-primary           { background-color: #2f6fd0; color: #ffffff;
-                              border-color: #2f6fd0; font-weight: bold; min-width: 210px; }
-button.tc-primary:hover     { background-color: #3d80e6; }
-button.tc-danger:hover      { background-color: #a8322c; border-color: #a8322c; color: #fff; }
-.tc-empty                   { color: #b3bdc8; font-size: 16px; padding: 18px; }
-.tc-about-title             { color: #ffffff; font-size: 24px; font-weight: bold; }
-.tc-about-section           { color: #78a9ef; font-size: 11px; font-weight: bold;
-                              letter-spacing: 1px; margin-top: 8px; }
-.tc-about-key               { color: #a5b0bd; font-size: 14px; }
-.tc-about-value             { color: #e6ebf0; font-size: 14px; }
-.tc-progress-title          { color: #ffffff; font-size: 20px; font-weight: bold; }
-.tc-progress-stage          { color: #d9e2ec; font-size: 16px; }
-.tc-error-detail            { color: #ffd2ce; font-size: 15px; }
-"""
-
 
 # ----------------------------------------------------------------- helpers ---
 def run(argv, timeout=15):
@@ -106,15 +52,7 @@ def run(argv, timeout=15):
         return ""
 
 
-def primary_ip():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("192.0.2.1", 9))          # TEST-NET-1: routes, never answers
-        return sock.getsockname()[0]
-    except OSError:
-        return ""
-    finally:
-        sock.close()
+
 
 
 def active_link_summary(root="/sys/class/net"):
@@ -187,11 +125,7 @@ def build_info():
     return info
 
 
-def product_title(info):
-    """Return the product name and release without hard-coding either one."""
-    name = str(info.get("name") or "ThinClient").strip() or "ThinClient"
-    version = str(info.get("version") or "").strip()
-    return "%s %s" % (name, version) if version else name
+
 
 
 def parse_cpu_info(text, cpu_count=None):
@@ -376,453 +310,10 @@ def hardware_info():
     return _HARDWARE_CACHE.copy()
 
 
-def labelled(text, css_class):
-    label = Gtk.Label(label=text, xalign=0)
-    label.get_style_context().add_class(css_class)
-    label.set_ellipsize(Pango.EllipsizeMode.END)
-    return label
 
 
-def button(text, css_classes, handler):
-    btn = Gtk.Button(label=text)
-    for cls in css_classes:
-        btn.get_style_context().add_class(cls)
-    btn.connect("clicked", handler)
-    return btn
 
 
-class AboutDialog(Gtk.Dialog):
-    """Product, support, and static device information in one calm view."""
-    def __init__(self, parent, info, hardware):
-        title = product_title(info)
-        super().__init__(title="About %s" % title, transient_for=parent, modal=True)
-        self.set_default_size(680, -1)
-        self.add_button("Close", Gtk.ResponseType.CLOSE)
-        self.set_default_response(Gtk.ResponseType.CLOSE)
-
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                          margin_start=24, margin_end=24,
-                          margin_top=20, margin_bottom=16)
-        content.pack_start(labelled(title, "tc-about-title"), False, False, 0)
-
-        intro = labelled(
-            "A focused Debian appliance for RDP, RemoteApp, and VNC sessions.",
-            "tc-sub",
-        )
-        intro.set_line_wrap(True)
-        content.pack_start(intro, False, False, 0)
-
-        grid = Gtk.Grid(row_spacing=8, column_spacing=18, margin_top=4)
-        grid.set_hexpand(True)
-        content.pack_start(grid, False, False, 0)
-
-        row = 0
-
-        def section(text):
-            nonlocal row
-            label = labelled(text.upper(), "tc-about-section")
-            grid.attach(label, 0, row, 2, 1)
-            row += 1
-
-        def detail(key, value):
-            nonlocal row
-            key_label = labelled(key, "tc-about-key")
-            key_label.set_width_chars(13)
-            value_label = labelled(value or "Unknown", "tc-about-value")
-            value_label.set_selectable(True)
-            value_label.set_ellipsize(Pango.EllipsizeMode.NONE)
-            value_label.set_line_wrap(True)
-            value_label.set_max_width_chars(58)
-            value_label.set_hexpand(True)
-            grid.attach(key_label, 0, row, 1, 1)
-            grid.attach(value_label, 1, row, 1, 1)
-            row += 1
-
-        section("Release")
-        detail("Version", info.get("version", "Unknown"))
-        detail("System", info.get("base", "Unknown"))
-        detail("Kernel", info.get("kernel") or platform.release())
-        freerdp = (info.get("freerdp") or "Unknown").split("+")[0]
-        detail("FreeRDP", freerdp)
-
-        section("This device")
-        for key in ("Architecture", "Processor", "Memory", "Graphics", "Network"):
-            detail(key, hardware.get(key, "Unknown"))
-
-        section("Project and support")
-        link = Gtk.LinkButton.new_with_label(GITHUB_URL, GITHUB_URL)
-        link.set_halign(Gtk.Align.START)
-        grid.attach(Gtk.Label(label="GitHub", xalign=0), 0, row, 1, 1)
-        grid.attach(link, 1, row, 1, 1)
-
-        privacy = labelled(
-            "Hardware is read locally once when About opens. Nothing is sent.",
-            "tc-sub",
-        )
-        privacy.set_line_wrap(True)
-        content.pack_start(privacy, False, False, 0)
-
-        self.get_content_area().add(content)
-        self.show_all()
-
-
-class HelpDialog(Gtk.Dialog):
-    """Public, credential-free device and support view."""
-
-    NETWORK_TEST = 101
-    CHANGELOG = 102
-
-    def __init__(self, parent, info, hardware, cache, last_error=""):
-        title = product_title(info)
-        super().__init__(title="Help and device information", transient_for=parent,
-                         modal=True)
-        self.set_default_size(760, 620)
-        self.add_button("Close", Gtk.ResponseType.CLOSE)
-        self.set_default_response(Gtk.ResponseType.CLOSE)
-        hostname = socket.gethostname()
-        address = primary_ip()
-        self.report = uxstate.support_report(
-            info, hardware, hostname, address, cache, last_error
-        )
-        self._qr_path = ""
-
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
-                          margin_start=24, margin_end=24,
-                          margin_top=20, margin_bottom=16)
-        content.pack_start(labelled("Help and device information", "tc-about-title"),
-                           False, False, 0)
-        intro = labelled(
-            "Give this screen or its support report to the help desk. "
-            "No usernames or passwords are included.", "tc-sub")
-        intro.set_line_wrap(True)
-        content.pack_start(intro, False, False, 0)
-
-        summary = Gtk.Grid(row_spacing=9, column_spacing=18)
-        summary.set_hexpand(True)
-        details = [
-            ("Version", info.get("version") or "Unknown"),
-            ("Image profile", (info.get("profile") or cache.get("profile") or
-                               "Unknown").title()),
-            ("Device", hostname or "Unknown"),
-            ("IP address", address or "No network"),
-            ("Boot/cache", cache.get("summary") or "Unknown"),
-            ("Last error", last_error or "None this boot"),
-        ]
-        for row, (key, value) in enumerate(details):
-            key_label = labelled(key, "tc-about-key")
-            value_label = labelled(value, "tc-about-value")
-            value_label.set_ellipsize(Pango.EllipsizeMode.NONE)
-            value_label.set_line_wrap(True)
-            value_label.set_selectable(True)
-            summary.attach(key_label, 0, row, 1, 1)
-            summary.attach(value_label, 1, row, 1, 1)
-        content.pack_start(summary, False, False, 0)
-
-        actions = Gtk.Box(spacing=8)
-        copy_btn = button("Copy support report", ["tc-btn", "tc-primary"],
-                          self._copy_report)
-        network_btn = button("Run network test", ["tc-btn"],
-                             lambda *_: self.response(self.NETWORK_TEST))
-        changelog_btn = button("What's new", ["tc-btn"],
-                               lambda *_: self.response(self.CHANGELOG))
-        actions.pack_start(copy_btn, False, False, 0)
-        actions.pack_start(network_btn, False, False, 0)
-        actions.pack_start(changelog_btn, False, False, 0)
-        content.pack_start(actions, False, False, 0)
-
-        lower = Gtk.Box(spacing=18)
-        expander = Gtk.Expander(label="Technical details")
-        report_view = Gtk.TextView(editable=False, cursor_visible=False,
-                                   monospace=True)
-        report_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        report_view.get_buffer().set_text(self.report)
-        report_scroll = Gtk.ScrolledWindow()
-        report_scroll.set_min_content_height(190)
-        report_scroll.add(report_view)
-        expander.add(report_scroll)
-        lower.pack_start(expander, True, True, 0)
-
-        qr = self._make_qr(title, hostname, address, cache, last_error)
-        if qr:
-            qr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=5)
-            qr_box.pack_start(Gtk.Image.new_from_file(qr), False, False, 0)
-            qr_box.pack_start(labelled("Scan for a compact support code", "tc-sub"),
-                              False, False, 0)
-            lower.pack_end(qr_box, False, False, 0)
-        content.pack_start(lower, True, True, 0)
-
-        privacy = Gtk.Label(
-            label="Hardware is read locally. Nothing is automatically uploaded.",
-            xalign=0,
-        )
-        privacy.get_style_context().add_class("tc-sub")
-        content.pack_end(privacy, False, False, 0)
-        self.get_content_area().add(content)
-        self.connect("destroy", self._cleanup_qr)
-        self.show_all()
-
-    def _copy_report(self, *_):
-        Gtk.Clipboard.get_default(self.get_display()).set_text(self.report, -1)
-
-    def _make_qr(self, title, hostname, address, cache, last_error):
-        encoder = shutil.which("qrencode")
-        if not encoder:
-            return ""
-        payload = " | ".join((
-            uxstate.clean_text(title, "ThinClient", 40),
-            "device=" + uxstate.clean_text(hostname, "unknown", 40),
-            "ip=" + uxstate.clean_text(address, "none", 48),
-            "boot=" + uxstate.clean_text(cache.get("summary"), "unknown", 80),
-            "error=" + uxstate.clean_text(last_error, "none", 80),
-        ))
-        try:
-            handle = tempfile.NamedTemporaryFile(
-                prefix="thinclient-support-", suffix=".png", delete=False)
-            handle.close()
-            result = subprocess.run(
-                [encoder, "-o", handle.name, "-s", "3", "--", payload],
-                capture_output=True, timeout=5,
-            )
-            if result.returncode == 0 and os.path.getsize(handle.name) > 0:
-                self._qr_path = handle.name
-                return handle.name
-            os.unlink(handle.name)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        return ""
-
-    def _cleanup_qr(self, *_):
-        if self._qr_path:
-            try:
-                os.unlink(self._qr_path)
-            except OSError:
-                pass
-            self._qr_path = ""
-
-
-class ChangelogDialog(Gtk.Dialog):
-    """Offline release history shipped inside every image."""
-
-    def __init__(self, parent, path=CHANGELOG_FILE):
-        super().__init__(title="What's new", transient_for=parent, modal=True)
-        self.set_default_size(760, 620)
-        self.add_button("Close", Gtk.ResponseType.CLOSE)
-        self.set_default_response(Gtk.ResponseType.CLOSE)
-
-        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
-                          margin_start=22, margin_end=22,
-                          margin_top=18, margin_bottom=14)
-        content.pack_start(labelled("What's new in ThinClient", "tc-about-title"),
-                           False, False, 0)
-        intro = labelled(
-            "These release notes are stored in the image and work without a network.",
-            "tc-sub",
-        )
-        intro.set_line_wrap(True)
-        content.pack_start(intro, False, False, 0)
-
-        view = Gtk.TextView(editable=False, cursor_visible=False, monospace=False)
-        view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        view.set_left_margin(12)
-        view.set_right_margin(12)
-        view.set_top_margin(10)
-        view.set_bottom_margin(10)
-        view.set_hexpand(True)
-        view.set_vexpand(True)
-        view.get_buffer().set_text(uxstate.changelog_text(path))
-        scroller = Gtk.ScrolledWindow()
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_min_content_height(420)
-        scroller.add(view)
-        content.pack_start(scroller, True, True, 0)
-        self.get_content_area().add(content)
-        self.show_all()
-
-
-class AdminDialog(Gtk.Dialog):
-    """One protected place for settings and technician tools."""
-
-    SETTINGS = 201
-    NETWORK = 202
-    TERMINAL = 203
-
-    def __init__(self, parent, allow_settings=True, allow_terminal=True):
-        super().__init__(title="Administrator tools", transient_for=parent, modal=True)
-        self.set_default_size(560, -1)
-        self.add_button("Close", Gtk.ResponseType.CLOSE)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=20)
-        intro = Gtk.Label(
-            label="Configuration and support tools for an authorised administrator.",
-            xalign=0,
-        )
-        intro.set_line_wrap(True)
-        box.pack_start(intro, False, False, 0)
-        for title, description, response, enabled in (
-            ("Settings", "Connections, display, device, and policy",
-             self.SETTINGS, allow_settings),
-            ("Network", "Wired/Wi-Fi configuration and detailed tests",
-             self.NETWORK, True),
-            ("Terminal", "Open a local support shell",
-             self.TERMINAL, allow_terminal),
-        ):
-            row = Gtk.Button()
-            inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin=8)
-            inner.pack_start(labelled(title, "tc-conn-name"), False, False, 0)
-            inner.pack_start(labelled(description, "tc-conn-desc"), False, False, 0)
-            row.add(inner)
-            row.set_sensitive(enabled)
-            row.connect("clicked", lambda _button, value=response: self.response(value))
-            box.pack_start(row, False, False, 0)
-        self.get_content_area().add(box)
-        self.show_all()
-
-
-class ConnectionProgressDialog(Gtk.Dialog):
-    """Visible, cancellable progress while the endpoint is being checked."""
-
-    def __init__(self, parent, connection, cancel_handler):
-        super().__init__(title="Connecting", transient_for=parent, modal=True)
-        self.set_deletable(False)
-        self.set_default_size(500, -1)
-        self.cancel_button = self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=22)
-        box.pack_start(labelled("Connecting to %s" % connection["name"],
-                                "tc-progress-title"), False, False, 0)
-        self.stage = labelled("Preparing connection", "tc-progress-stage")
-        self.detail = labelled("Checking local settings…", "tc-sub")
-        self.detail.set_line_wrap(True)
-        self.progress = Gtk.ProgressBar(show_text=False)
-        box.pack_start(self.stage, False, False, 0)
-        box.pack_start(self.detail, False, False, 0)
-        box.pack_start(self.progress, False, False, 0)
-        self.get_content_area().add(box)
-        self._pulse_id = GLib.timeout_add(120, self._pulse)
-        self.connect("response", lambda _dialog, response:
-                     cancel_handler() if response == Gtk.ResponseType.CANCEL else None)
-        self.connect("destroy", self._destroyed)
-        self.show_all()
-
-    def _pulse(self):
-        self.progress.pulse()
-        return True
-
-    def set_stage(self, stage, detail=""):
-        self.stage.set_text(stage)
-        self.detail.set_text(detail)
-
-    def set_cancelling(self):
-        self.set_stage("Cancelling", "Waiting for the connection attempt to stop…")
-        self.cancel_button.set_sensitive(False)
-
-    def _destroyed(self, *_):
-        if self._pulse_id:
-            GLib.source_remove(self._pulse_id)
-            self._pulse_id = None
-
-
-class ConnectionErrorDialog(Gtk.Dialog):
-    """Actionable failure instead of a technical status-line dead end."""
-
-    NETWORK_TEST = 301
-
-    def __init__(self, parent, connection, message, retryable=True):
-        super().__init__(title="Could not connect", transient_for=parent, modal=True)
-        self.set_default_size(600, -1)
-        self.add_button("Choose another", Gtk.ResponseType.CANCEL)
-        self.add_button("Run network test", self.NETWORK_TEST)
-        if retryable:
-            retry = self.add_button("Try again", Gtk.ResponseType.OK)
-            retry.get_style_context().add_class("suggested-action")
-            self.set_default_response(Gtk.ResponseType.OK)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin=22)
-        box.pack_start(labelled("Connection to %s failed" % connection["name"],
-                                "tc-progress-title"), False, False, 0)
-        detail = labelled(message, "tc-error-detail")
-        detail.set_ellipsize(Pango.EllipsizeMode.NONE)
-        detail.set_line_wrap(True)
-        box.pack_start(detail, False, False, 0)
-        hint = labelled(
-            "Try the network test for a safe route, DNS, port, and protocol check. "
-            "No credentials are sent by that test.", "tc-sub")
-        hint.set_ellipsize(Pango.EllipsizeMode.NONE)
-        hint.set_line_wrap(True)
-        box.pack_start(hint, False, False, 0)
-        self.get_content_area().add(box)
-        self.show_all()
-
-
-# ------------------------------------------------------- credential prompt ---
-class CredentialDialog(Gtk.Dialog):
-    def __init__(self, parent, conn):
-        super().__init__(title="Sign in to %s" % conn["name"], transient_for=parent,
-                         modal=True)
-        self.set_default_size(480, -1)
-        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        self.connect_button = self.add_button("Connect", Gtk.ResponseType.OK)
-        self.connect_button.get_style_context().add_class("suggested-action")
-        self.set_default_response(Gtk.ResponseType.OK)
-
-        grid = Gtk.Grid(row_spacing=8, column_spacing=10, margin=18)
-        self.user = Gtk.Entry(text=conn.get("username", ""), activates_default=True)
-        self.domain = Gtk.Entry(text=conn.get("domain", ""), activates_default=True)
-        self.password = Gtk.Entry(visibility=False, activates_default=True)
-        self.remember = Gtk.CheckButton(label="Remember for this session")
-        self.show_password = Gtk.CheckButton(label="Show password")
-        self.show_password.connect(
-            "toggled", lambda widget: self.password.set_visibility(widget.get_active()))
-        self.caps = Gtk.Label(xalign=0)
-        self.caps.get_style_context().add_class("tc-status-bad")
-
-        for row, (text, widget) in enumerate((
-            ("Username", self.user), ("Domain", self.domain), ("Password", self.password)
-        )):
-            grid.attach(Gtk.Label(label=text, xalign=1), 0, row, 1, 1)
-            widget.set_hexpand(True)
-            grid.attach(widget, 1, row, 1, 1)
-        options = Gtk.Box(spacing=14)
-        options.pack_start(self.remember, False, False, 0)
-        options.pack_start(self.show_password, False, False, 0)
-        grid.attach(options, 1, 3, 1, 1)
-        grid.attach(self.caps, 1, 4, 1, 1)
-
-        # This server checks credentials before it will show a desktop, so a
-        # blank username or password cannot succeed. FreeRDP's own response to
-        # missing credentials is to try to prompt on a terminal that does not
-        # exist and abort with "the connection was cancelled", which tells the
-        # person at the screen nothing. Refuse to start instead.
-        self.hint = Gtk.Label(xalign=0)
-        self.hint.get_style_context().add_class("tc-sub")
-        grid.attach(self.hint, 1, 5, 1, 1)
-
-        for entry in (self.user, self.password):
-            entry.connect("changed", self._validate)
-        self.password.connect("key-release-event", self._caps_state)
-
-        self.get_content_area().add(grid)
-        self.show_all()
-        self._validate()
-        self._caps_state()
-        self.password.grab_focus() if conn.get("username") else self.user.grab_focus()
-
-    def _validate(self, *_):
-        missing = []
-        if not self.user.get_text().strip():
-            missing.append("username")
-        if not self.password.get_text():
-            missing.append("password")
-        self.connect_button.set_sensitive(not missing)
-        self.hint.set_text(("Enter a %s to continue." % " and ".join(missing))
-                           if missing else "")
-
-    def _caps_state(self, *_):
-        keymap = Gdk.Keymap.get_default()
-        active = bool(keymap and keymap.get_caps_lock_state())
-        self.caps.set_text("Caps Lock is on" if active else "")
-        return False
-
-    def values(self):
-        return (self.user.get_text().strip(), self.domain.get_text().strip(),
-                self.password.get_text(), self.remember.get_active())
 
 
 # --------------------------------------------------------------- main window -
@@ -849,6 +340,8 @@ class ThinClient(Gtk.Window):
         self._status_expires = 0
         self._network_online = False
         self.connection_rows = []
+        self._ready_recorded = False
+        self.connect("map-event", self._record_ready)
 
         self.get_style_context().add_class("tc-root")
         self.set_default_size(900, 640)
@@ -901,7 +394,19 @@ class ThinClient(Gtk.Window):
         GLib.timeout_add_seconds(2, self.refresh_status)
         self.refresh_status()
 
+        if self.cfg.get("configuration_blocked"):
+            self.set_status("Waiting for approved configuration. Open Help to check the network.", bad=True, ttl=0)
+
     # ------------------------------------------------------------- chrome ---
+    def _record_ready(self, *_):
+        if not self._ready_recorded:
+            self._ready_recorded = True
+            metrics.record("ui_ready", {"version": self.info.get("version", "unknown"),
+                                       "profile": self.info.get("profile", "unknown"),
+                                       "config_state": uxstate.configuration_status().get("state", "unknown"),
+                                       "cache_state": uxstate.cache_status().get("state", "unknown")})
+        return False
+
     def _header(self):
         box = Gtk.Box(spacing=12)
         box.get_style_context().add_class("tc-header")
@@ -1252,6 +757,7 @@ class ThinClient(Gtk.Window):
             return
 
         self.session_active = True
+        self._session_started_at = time.monotonic()
         self.cancel_reconnect = False
         self.session_cancelled = False
         self.session_proc = None
@@ -1305,6 +811,8 @@ class ThinClient(Gtk.Window):
     def _session_launched(self):
         if self.session_cancelled:
             return False
+        metrics.record("client_started", {"elapsed_seconds": round(time.monotonic() -
+                       getattr(self, "_session_started_at", time.monotonic()), 3)})
         self._progress_stage(
             "Starting desktop", "The remote window is opening…")
         self._close_progress()
@@ -1397,6 +905,7 @@ class ThinClient(Gtk.Window):
         return code, None
 
     def _session_done(self, conn, code, error):
+        metrics.record("session_ended" if code == 0 else "session_failed", {"exit_code": code})
         self.session_active = False
         self.session_proc = None
         self.connect_btn.set_sensitive(True)
@@ -1493,7 +1002,32 @@ class ThinClient(Gtk.Window):
     def authorised(self):
         stored = self.cfg["device"].get("admin_password", "")
         if not stored:
-            return True
+            dialog = Gtk.Dialog(title="Set up administrator access", transient_for=self, modal=True)
+            dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+            dialog.add_button("Set password", Gtk.ResponseType.OK)
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=20)
+            message = Gtk.Label(label="Set an administrator password before opening support tools.\n"
+                                     "Use at least 12 characters. On centrally managed devices,\n"
+                                     "ask your administrator to set this in the central configuration.", xalign=0)
+            box.add(message)
+            password = Gtk.Entry(visibility=False, placeholder_text="New administrator password")
+            confirm = Gtk.Entry(visibility=False, placeholder_text="Repeat password")
+            box.add(password)
+            box.add(confirm)
+            dialog.get_content_area().add(box)
+            dialog.show_all()
+            while dialog.run() == Gtk.ResponseType.OK:
+                value = password.get_text()
+                if len(value) < 12 or value != confirm.get_text():
+                    message.set_text("Passwords must match and contain at least 12 characters.")
+                    continue
+                self.cfg["device"]["admin_password"] = tcconfig.hash_password(value)
+                ok, hint = tcconfig.save(self.cfg)
+                self.set_status(hint, bad=not ok)
+                dialog.destroy()
+                return ok
+            dialog.destroy()
+            return False
         dialog = Gtk.Dialog(title="Administrator", transient_for=self, modal=True)
         dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
         dialog.add_button("Unlock", Gtk.ResponseType.OK)
@@ -1514,7 +1048,7 @@ class ThinClient(Gtk.Window):
         dialog = AdminDialog(
             self,
             allow_settings=self.cfg["device"].get("allow_settings", True),
-            allow_terminal=self.cfg["device"].get("allow_terminal", True),
+            allow_terminal=self.cfg["device"].get("allow_terminal", False),
         )
         response = dialog.run()
         dialog.destroy()
@@ -1579,7 +1113,7 @@ class ThinClient(Gtk.Window):
 
     def _open_terminal(self, authorised=False):
         try:
-            if not self.cfg["device"].get("allow_terminal", True):
+            if not self.cfg["device"].get("allow_terminal", False):
                 self.set_status("The terminal is disabled on this device.", bad=True)
                 return
             if not authorised and not self.authorised():

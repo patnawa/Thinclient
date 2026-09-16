@@ -12,7 +12,12 @@ case "${1:-}" in prereqs) prereqs; exit 0 ;; esac
 # cache USB on Ivy Bridge/Haswell-era and newer desktop hardware.
 copy_exec /usr/bin/sha256sum /bin
 copy_exec /usr/bin/tee /bin
+copy_exec /usr/bin/cp /bin
 copy_exec /usr/sbin/blkid /sbin
+if [ -f /etc/thinclient/release.pub ]; then
+    copy_exec /usr/bin/openssl /bin
+    copy_file config /etc/thinclient/release.pub
+fi
 
 for module in sd_mod usb_storage uas \
               uhci_hcd ohci_hcd ohci_pci ehci_hcd ehci_pci \

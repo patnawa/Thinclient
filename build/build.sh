@@ -156,19 +156,49 @@ fi
 chmod 0440 "$ROOTFS"/etc/sudoers.d/* 2>/dev/null || true
 chmod 0755 "$ROOTFS"/usr/local/lib/thinclient/*.py 2>/dev/null || true
 
-# Bake build-time defaults into the factory config.
-python3 - "$ROOTFS/etc/thinclient/config.json" <<PYEOF
-import json, sys
+# Bake structured defaults without interpolating site values into Python code.
+if [ -n "$DEFAULT_CONFIG_FILE" ]; then
+    python3 "$REPO_DIR/tools/check-config.py" "$DEFAULT_CONFIG_FILE"
+    install -m0644 "$DEFAULT_CONFIG_FILE" "$ROOTFS/etc/thinclient/config.json"
+else
+DEFAULT_TIMEZONE="$DEFAULT_TIMEZONE" DEFAULT_KEYMAP="$DEFAULT_KEYMAP" \
+DEFAULT_NTP="$DEFAULT_NTP" DEFAULT_SERVER="$DEFAULT_SERVER" \
+DEFAULT_SERVER_NAME="$DEFAULT_SERVER_NAME" DEFAULT_DOMAIN="$DEFAULT_DOMAIN" \
+python3 - "$ROOTFS/etc/thinclient/config.json" <<'PYEOF'
+import json, os, sys
 p = sys.argv[1]
 c = json.load(open(p))
-c["device"]["timezone"] = "${DEFAULT_TIMEZONE}"
-c["device"]["keyboard_layout"] = "${DEFAULT_KEYMAP}"
-c["device"]["ntp_server"] = "${DEFAULT_NTP}"
-c["connections"][0]["host"] = "${DEFAULT_SERVER}"
-c["connections"][0]["name"] = "${DEFAULT_SERVER_NAME}"
-c["connections"][0]["domain"] = "${DEFAULT_DOMAIN}"
+c["device"]["timezone"] = os.environ["DEFAULT_TIMEZONE"]
+c["device"]["keyboard_layout"] = os.environ["DEFAULT_KEYMAP"]
+c["device"]["ntp_server"] = os.environ["DEFAULT_NTP"]
+c["connections"][0]["host"] = os.environ["DEFAULT_SERVER"]
+c["connections"][0]["name"] = os.environ["DEFAULT_SERVER_NAME"]
+c["connections"][0]["domain"] = os.environ["DEFAULT_DOMAIN"]
 json.dump(c, open(p, "w"), indent=2)
 PYEOF
+fi
+if [ -n "$TRUST_POLICY_FILE" ]; then
+    install -m0644 "$TRUST_POLICY_FILE" "$ROOTFS/etc/thinclient/policy.json"
+fi
+if [ -n "$CONFIG_SIGNING_KEY" ]; then
+    openssl pkey -in "$CONFIG_SIGNING_KEY" -pubout -out "$ROOTFS/etc/thinclient/config.pub"
+elif [ -n "$CONFIG_PUBLIC_KEY_FILE" ]; then
+    install -m0644 "$CONFIG_PUBLIC_KEY_FILE" "$ROOTFS/etc/thinclient/config.pub"
+fi
+if [ -n "$CONFIG_SIGNING_KEY$CONFIG_PUBLIC_KEY_FILE" ]; then
+    python3 - "$ROOTFS/etc/thinclient/policy.json" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+policy = json.load(open(path))
+policy["config_public_key"] = "/etc/thinclient/config.pub"
+json.dump(policy, open(path, "w"), indent=2)
+PYEOF
+fi
+if [ -n "$RELEASE_SIGNING_KEY" ]; then
+    openssl pkey -in "$RELEASE_SIGNING_KEY" -pubout -out "$ROOTFS/etc/thinclient/release.pub"
+elif [ -n "$RELEASE_PUBLIC_KEY_FILE" ]; then
+    install -m0644 "$RELEASE_PUBLIC_KEY_FILE" "$ROOTFS/etc/thinclient/release.pub"
+fi
 
 # Export the *baked* configuration next to the ISO. The overlay copy still holds
 # the placeholder addresses from the template, so anything that seeds a TCCONF
@@ -183,12 +213,13 @@ cp "$ROOTFS/etc/thinclient/config.json" "$OUTDIR/config.json"
 # and costs far more to diagnose than this check costs to run.
 BAKED_HOST="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["connections"][0]["host"])' \
               "$OUTDIR/config.json")"
-[ "$BAKED_HOST" = "$DEFAULT_SERVER" ] \
+[ -n "$DEFAULT_CONFIG_FILE" ] || [ "$BAKED_HOST" = "$DEFAULT_SERVER" ] \
   || die "config bake failed: image says '$BAKED_HOST', DEFAULT_SERVER is '$DEFAULT_SERVER'"
 log "stage 2  exported out/config.json (server: $BAKED_HOST)"
 
 log "stage 2  finalising chroot"
 in_chroot /tmp/chroot-finalize.sh || die "chroot finalisation failed"
+chroot "$ROOTFS" dpkg-query -W '-f=${Package}\t${Version}\n' > "$OUTDIR/packages.tsv"
 rm -f "$ROOTFS"/tmp/chroot-*.sh "$ROOTFS"/tmp/packages.list
 
 unmount_all
@@ -543,6 +574,14 @@ boot
 EOF
 
 cp -a "$REPO_DIR/pxe/." "$PXE/" 2>/dev/null || true
+cp "$OUTDIR/config.json" "$PXE/config.json"
+if [ -n "$CONFIG_SIGNING_KEY" ]; then
+    openssl dgst -sha256 -sign "$CONFIG_SIGNING_KEY" -out "$PXE/config.json.sig" "$PXE/config.json"
+fi
+SIGN_ARGS=()
+[ -z "$RELEASE_SIGNING_KEY" ] || SIGN_ARGS=(--key "$RELEASE_SIGNING_KEY")
+python3 "$REPO_DIR/tools/release-manifest.py" create "$PXE/thinclient" \
+    --version "$DISTRO_VERSION" "${SIGN_ARGS[@]}"
 
 # ------------------------------------------------------------------ report ---
 ISO_MB=$(( $(stat -c%s "$ISO_PATH") / 1024 / 1024 ))

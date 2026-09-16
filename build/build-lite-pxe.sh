@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
-export DISTRO_VERSION="${DISTRO_VERSION:-1.4.1-lite}"
+export DISTRO_VERSION="${DISTRO_VERSION:-1.5.0-lite}"
 export IMAGE_NAME="${IMAGE_NAME:-thinclient-lite-amd64}"
 export WORKDIR="${WORKDIR:-/opt/tcbuild-lite}"
 export OUTDIR="${OUTDIR:-$REPO/out/lite}"
@@ -28,8 +28,8 @@ export INCLUDE_SECUREBOOT="${INCLUDE_SECUREBOOT:-1}"
 # writable TCCONF partition in its optional ISO artifact.
 export TCCONF_SIZE_MB="${TCCONF_SIZE_MB:-0}"
 
-# Only Ethernet drivers are needed before the HTTP squashfs arrives. The full
-# kernel module tree remains available after Linux switches to the live root.
+# Ethernet plus a bounded set of storage/media drivers support PXE, USB, ISO
+# and installed-disk boot. All other drivers arrive with the live root.
 export INITRAMFS_MODULES="${INITRAMFS_MODULES:-list}"
 export CACHE_PROFILE="${CACHE_PROFILE:-lite}"
 

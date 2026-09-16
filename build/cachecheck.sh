@@ -6,7 +6,7 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=config.sh
 source "$REPO/build/config.sh"
 ROOTFS="$WORKDIR/rootfs"
-PXE_TREE="${PXE_TREE:-${OUTDIR:-$REPO/out}/pxe}"
+PXE_TREE="${PXE_TREE:-${PXE:-${OUTDIR:-$REPO/out}/pxe}}"
 fail=0
 ok() { printf '  ok      %s\n' "$1"; }
 bad() { printf '  FAIL    %s\n' "$1"; fail=1; }
@@ -22,17 +22,21 @@ done
 grep -q '^do_httpmount_network ()' "$ROOTFS/usr/lib/live/boot/9990-mount-http.sh" \
     && ok "Debian HTTP fetcher is wrapped" || bad "Debian HTTP fetcher was not renamed"
 
-INITRD="$(ls -1 "$ROOTFS"/boot/initrd.img-* | sort -V | tail -1)"
+INITRD="${INITRD:-$PXE_TREE/thinclient/initrd.img}"
+[ -r "$INITRD" ] || { echo "missing exported initramfs: $INITRD" >&2; exit 1; }
 if command -v lsinitramfs >/dev/null 2>&1; then
     INITRD_LIST="$(lsinitramfs "$INITRD")"
 else
-    INITRD_GUEST="${INITRD#"$ROOTFS"}"
+    install -d "$ROOTFS/opt/test-assets"
+    cp "$INITRD" "$ROOTFS/opt/test-assets/initrd.img"
+    INITRD_GUEST=/opt/test-assets/initrd.img
     INITRD_LIST="$(chroot "$ROOTFS" lsinitramfs "$INITRD_GUEST")"
 fi
 for pattern in \
     'usr/lib/live/boot/9991-thinclient-cache.sh' \
     'bin/sha256sum' \
     'bin/tee' \
+    'bin/cp' \
     '/usb-storage\.ko(\.|$)' \
     '/uas\.ko(\.|$)' \
     '/xhci-pci\.ko(\.|$)' \
@@ -41,6 +45,13 @@ for pattern in \
     grep -Eq "$pattern" <<<"$INITRD_LIST" \
         && ok "$pattern is in initramfs" || bad "$pattern is missing from initramfs"
 done
+
+if [ "$CACHE_PROFILE" = lite ]; then
+    for module in ata_piix ahci nvme virtio_blk sr_mod; do
+        grep -Eq "/${module}\\.ko(\\.|$)" <<<"$INITRD_LIST" \
+            && ok "$module supports Lite media boot" || bad "$module is missing from Lite initramfs"
+    done
+fi
 
 for profile in lite full; do
     directory="$PXE_TREE/thinclient/$profile"

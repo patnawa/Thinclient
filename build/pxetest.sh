@@ -41,7 +41,9 @@ sleep 1
 
 # --- point the boot files at the host as QEMU's guest sees it ----------------
 # 10.0.2.2 is the host from inside QEMU user networking.
-bash "$PXE/render-configs.sh" "10.0.2.2:$PORT" >/dev/null
+RENDER_FLAGS=()
+[ "${PXETEST_TFTP_FIRST:-0}" = 1 ] && RENDER_FLAGS+=(--tftp-first)
+bash "$PXE/render-configs.sh" "10.0.2.2:$PORT" "${RENDER_FLAGS[@]}" >/dev/null
 grep -q '{{HTTP}}' "$PXE/pxelinux.cfg/default" && {
     echo "FAIL: the boot files still contain {{HTTP}}"; exit 1; }
 
@@ -55,6 +57,10 @@ cfg["connections"][0]["name"] = "CENTRAL CONFIG OK"
 cfg["device"]["screen_blank_minutes"] = 0
 json.dump(cfg, open(sys.argv[2], "w", encoding="utf-8"), indent=2)
 PYEOF
+if [ -n "${TC_TEST_CONFIG_SIGNING_KEY:-}" ]; then
+    openssl dgst -sha256 -sign "$TC_TEST_CONFIG_SIGNING_KEY" \
+        -out "$PXE/config.json.sig" "$PXE/config.json"
+fi
 echo "central config: $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["connections"][0]["name"])' "$PXE/config.json")"
 
 # --- the deployment server --------------------------------------------------
@@ -104,7 +110,10 @@ fi
 echo
 echo "network booting a diskless client ($MODE, boot file: $BOOTFILE)"
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
-    -m 2560 -smp 4 \
+    -m "${TC_TEST_RAM_MB:-2560}" -smp 4 \
+    -device virtio-serial-pci \
+    -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
+    -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -netdev "user,id=n0,tftp=$PXE,bootfile=$BOOTFILE" \
     -device "$NET_DEVICE" \
     -boot n \
@@ -124,6 +133,12 @@ for T in 20 40 60 90 120; do
     mean=$(convert "$OUT/t$T.png" -format '%[fx:int(mean*255)]' info: 2>/dev/null || echo 0)
     echo "  t=${T}s  brightness $mean"
     [ "${mean:-0}" -gt "$BEST" ] && BEST=$mean
+    if { [ -z "${QEMU_EXTRA_ARGS:-}" ] || [ "$EXPECT_SQUASH" = 0 ]; } \
+            && grep -q '"event": "ui_ready"' "$OUT/ready.jsonl"; then
+        sleep 2
+        shoot ready
+        break
+    fi
 done
 
 mon "quit"; sleep 2
@@ -152,13 +167,17 @@ fi
     || { echo "  FAIL  central configuration was never requested"; fail=1; }
 [ -n "$CLIENT_MAC" ] && echo "  ok    it identified itself as $CLIENT_MAC (per-device config would work)" \
     || echo "  note  no MAC header seen"
-[ "$BEST" -ge 20 ] && echo "  ok    it reached a graphical session" \
-    || { echo "  FAIL  it never reached a session (max brightness $BEST)"; fail=1; }
+grep -q '"event": "ui_ready"' "$OUT/ready.jsonl" \
+    && echo "  ok    the connection manager reported a mapped window" \
+    || { echo "  FAIL  no connection-manager readiness event"; fail=1; }
+grep -q '"config_state": "current"' "$OUT/ready.jsonl" \
+    && echo "  ok    the client accepted the central configuration" \
+    || { echo "  FAIL  central configuration was not accepted"; fail=1; }
 
 echo
 if [ "$fail" -eq 0 ]; then
     echo "RESULT: network boot works end to end."
-    echo "Check $OUT/t120.png - the connection should be named CENTRAL CONFIG OK,"
+    echo "Check $OUT/*.png - the connection should be named CENTRAL CONFIG OK,"
     echo "which proves the setting came from the server and not from the image."
 else
     echo "RESULT: FAILED - see $OUT/serial.log and $OUT/server.log"

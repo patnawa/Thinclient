@@ -12,7 +12,7 @@
     "auto_connect": "",
     "allow_settings": true,
     "allow_console": false,
-    "allow_terminal": true,
+    "allow_terminal": false,
     "session_bar": true,
     "show_ip": true
   },
@@ -33,7 +33,7 @@
       "gateway_domain": "",
       "app": "",
       "display": "fullscreen",
-      "cert_policy": "ignore",
+      "cert_policy": "strict",
       "security": "auto",
       "gfx": "auto",
       "network": "auto",

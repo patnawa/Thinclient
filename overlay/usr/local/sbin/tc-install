@@ -28,7 +28,8 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                             "lib", "thinclient"))
 
 LIVE_MEDIUM = "/run/live/medium"
 ESP_LABEL = "THINBOOT"
@@ -155,10 +156,15 @@ def partition(target):
         "--new=3:0:0", "--typecode=3:0700", "--change-name=3:%s" % CONFIG_LABEL,
         target,
     ])
-    run(["partprobe", target], check=False)
-    # udev needs a moment before the new nodes exist.
+    run(["partprobe", target])
+    run(["udevadm", "settle", "--timeout=10"], quiet=True)
+    # A device node can exist before the kernel has finished revalidating it.
+    # Require a readable nonzero block-device size, not just a pathname.
     for _ in range(20):
-        if all(os.path.exists(part_path(target, n)) for n in (2, 3)):
+        sizes = [run(["blockdev", "--getsize64", part_path(target, n)],
+                     check=False, quiet=True) for n in (2, 3)]
+        if all(result.returncode == 0 and result.stdout.strip().isdigit()
+               and int(result.stdout.strip()) > 0 for result in sizes):
             break
         time.sleep(0.5)
     else:

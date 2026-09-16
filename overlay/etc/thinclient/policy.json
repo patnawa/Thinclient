@@ -1,0 +1,7 @@
+{
+  "production": false,
+  "config_required": false,
+  "require_https": false,
+  "config_url": "",
+  "config_public_key": ""
+}

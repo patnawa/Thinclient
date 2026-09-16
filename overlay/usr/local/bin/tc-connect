@@ -14,7 +14,8 @@ import subprocess
 import sys
 import time
 
-sys.path.insert(0, "/usr/local/lib/thinclient")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                             "lib", "thinclient"))
 import tcconfig  # noqa: E402
 
 

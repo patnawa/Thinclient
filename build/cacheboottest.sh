@@ -12,8 +12,9 @@ SIZE_MB="${CACHE_SIZE_MB:-1024}"
 for tool in qemu-system-x86_64 mkfs.vfat mdir; do
     command -v "$tool" >/dev/null || { echo "missing test tool: $tool" >&2; exit 2; }
 done
-[ -r "$PXE/thinclient/$PROFILE/filesystem.squashfs" ] \
-    || { echo "missing $PROFILE profile in $PXE" >&2; exit 1; }
+ROOT_IMAGE="$PXE/thinclient/$PROFILE/filesystem.squashfs"
+[ -r "$ROOT_IMAGE" ] || ROOT_IMAGE="$PXE/thinclient/filesystem.squashfs"
+[ -r "$ROOT_IMAGE" ] || { echo "missing $PROFILE profile in $PXE" >&2; exit 1; }
 
 mkdir -p "$OUT"
 rm -f "$CACHE_IMAGE"
@@ -24,7 +25,7 @@ echo "=== first boot: network fetch and cache fill ==="
 PXE="$PXE" PXETEST_OUT="$OUT/first" CONFIG_SOURCE="$PXE/config.json" \
 QEMU_EXTRA_ARGS="$EXTRA" EXPECT_SQUASH=1 bash "$REPO/build/pxetest.sh" bios
 
-EXPECTED_SHA="$(sha256sum "$PXE/thinclient/$PROFILE/filesystem.squashfs" | awk '{print $1}')"
+EXPECTED_SHA="$(sha256sum "$ROOT_IMAGE" | awk '{print $1}')"
 mdir -b -i "$CACHE_IMAGE" "::/thinclient-cache/$PROFILE" 2>/dev/null \
     | grep -q "/$EXPECTED_SHA.squashfs$" || {
         echo "expected checksum-addressed cache file is missing" >&2

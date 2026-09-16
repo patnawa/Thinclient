@@ -1,7 +1,7 @@
 name: thinclient-pxe
 
 x-pxe-image: &pxe-image
-  image: ${PXE_IMAGE:-thinclient-pxe-server:1.4.1}
+  image: ${PXE_IMAGE:-thinclient-pxe-server:1.5.0}
   build:
     context: ../..
     dockerfile: deploy/docker-pxe/Dockerfile
@@ -75,6 +75,35 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  config-https:
+    <<: *pxe-image
+    profiles: ["https"]
+    user: "65534:65534"
+    command:
+      - python3
+      - /usr/local/lib/thinclient/tc-config-server.py
+      - --root
+      - /srv/pxe
+      - --bind
+      - ${PXE_LISTEN:-0.0.0.0}
+      - --port
+      - "${HTTPS_PORT:-8443}"
+      - --tls-cert
+      - /tls/server.crt
+      - --tls-key
+      - /tls/server.key
+    volumes:
+      - type: bind
+        source: ${PXE_ROOT:-../../out/pxe}
+        target: /srv/pxe
+        read_only: true
+      - type: bind
+        source: ${TLS_CERT_DIR:-./certs}
+        target: /tls
+        read_only: true
+    tmpfs:
+      - /tmp
 
 volumes:
   status-data:

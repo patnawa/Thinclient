@@ -5,13 +5,26 @@ must never infer secrets from logs or expose raw configuration dictionaries.
 """
 
 import os
+import json
 import re
 
 
-CACHE_INIT_STATUS = "/run/initramfs/tc-cache-status"
+CACHE_INIT_STATUS = "/run/thinclient/cache-boot-status"
 CACHE_SAVE_STATUS = "/run/thinclient/cache-status"
 CACHE_PROGRESS_STATUS = "/run/thinclient/cache-progress"
 CHANGELOG_LIMIT = 96 * 1024
+
+
+def configuration_status(path="/run/thinclient/config-status.json"):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            status = json.load(handle)
+        if not isinstance(status, dict):
+            return {}
+        return {key: clean_text(status.get(key), "Unknown") for key in
+                ("state", "source", "version", "last_success", "error")}
+    except (OSError, ValueError):
+        return {}
 
 
 def clean_text(value, fallback="", limit=160):
@@ -115,7 +128,13 @@ def cache_status(init_text=None, save_text=None, progress_text=None):
             "summary": "Saving USB boot cache: %d%%%s" % (percent, suffix),
             "detail": "Keep the TCCACHE USB connected until saving finishes.",
         }
-    if saved.get("state") == "saved" or saved.get("profile"):
+    if saved.get("state") == "failed":
+        return {
+            "state": "failed", "profile": profile, "percent": 0,
+            "summary": "USB cache could not be saved%s" % suffix,
+            "detail": clean_text(saved.get("reason"), "Check the USB and its free space."),
+        }
+    if saved.get("state") == "saved":
         return {
             "state": "saved", "profile": profile, "percent": 100,
             "summary": "USB boot cache saved and verified%s" % suffix,
@@ -216,6 +235,8 @@ def support_report(info, hardware, hostname, address, cache, last_error=""):
         "Address: %s" % clean_text(address, "No network"),
         "Boot/cache: %s" % clean_text(cache.get("summary"), "Unknown"),
     ]
+    for key, value in configuration_status().items():
+        lines.append("Configuration %s: %s" % (key.replace("_", " "), value))
     for key in ("Architecture", "Processor", "Memory", "Graphics", "Network"):
         lines.append("%s: %s" % (key, clean_text(hardware.get(key), "Unknown", 300)))
     if last_error:

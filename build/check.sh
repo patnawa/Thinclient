@@ -16,7 +16,7 @@ check_sh() {
 }
 
 echo "shell (bash):"
-for f in build/*.sh pxe/*.sh; do [ -f "$f" ] || continue; check_sh "$f" bash; done
+for f in build/*.sh pxe/*.sh deploy/docker-pxe/*.sh; do [ -f "$f" ] || continue; check_sh "$f" bash; done
 
 echo "shell (posix sh):"
 for f in overlay/usr/local/bin/tc-session \
@@ -51,7 +51,7 @@ for f in overlay/usr/local/lib/thinclient/*.py \
 done
 
 echo "data files:"
-for f in overlay/etc/thinclient/config.json; do
+for f in overlay/etc/thinclient/*.json; do
   if python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" 2>"$tmp/err"; then
     echo "  ok    $f"
   else

@@ -14,17 +14,7 @@ source "$REPO/build/config.sh"
 ROOTFS="$WORKDIR/rootfs"
 [ -d "$ROOTFS" ] || { echo "no rootfs at $ROOTFS - run build.sh first"; exit 1; }
 
-# Exercise the current overlay during development, not whatever copy happened
-# to be present at the last full image build. This is the same red-green sync
-# used by unittest.sh and prevents a stale helper from producing false results.
-for relative in usr/local/sbin/tc-save-config \
-                usr/local/sbin/tc-fetch-config \
-                usr/local/sbin/tc-apply-config \
-                etc/NetworkManager/dispatcher.d/50-thinclient; do
-    sed 's/\r$//' "$REPO/overlay/$relative" > "$ROOTFS/$relative"
-done
-sed 's/\r$//' "$REPO/overlay/usr/local/lib/thinclient/tcconfig.py" \
-    > "$ROOTFS/usr/local/lib/thinclient/tcconfig.py"
+# Test the supplied artifact without refreshing any shipped code from source.
 
 fail=0
 ok()   { printf '  ok      %s\n' "$1"; }
@@ -166,7 +156,14 @@ as_root /bin/rm -f /run/thinclient/save.json
 # output file, which is essential: a connection failure would not exercise the
 # historical `curl -o remote-config.json.tmp` symlink vulnerability.
 as_root /bin/mkdir -p /run/tc-config-test
-as_root /bin/sh -c 'printf "{\"schema\": 1}\n" > /run/tc-config-test/config.json'
+cp "$ROOTFS/etc/thinclient/config.json" "$ROOTFS/run/tc-config-test/config.json"
+if [ -n "${TC_TEST_CONFIG_SIGNING_KEY:-}" ]; then
+    openssl dgst -sha256 -sign "$TC_TEST_CONFIG_SIGNING_KEY" \
+        -out "$ROOTFS/run/tc-config-test/config.json.sig" "$ROOTFS/run/tc-config-test/config.json"
+elif [ -r "${PXE:-$REPO/out/pxe}/config.json.sig" ]; then
+    cp "${PXE:-$REPO/out/pxe}/config.json" "$ROOTFS/run/tc-config-test/config.json"
+    cp "${PXE:-$REPO/out/pxe}/config.json.sig" "$ROOTFS/run/tc-config-test/config.json.sig"
+fi
 HTTP_PORT="$(as_root /usr/bin/python3 -c \
     'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 # Launch the server directly rather than backgrounding the as_root shell

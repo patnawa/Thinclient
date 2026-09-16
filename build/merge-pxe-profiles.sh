@@ -38,6 +38,9 @@ cp -a "$FULL/thinclient" "$OUT/thinclient/full"
 # Prefer the full build's exported central configuration. Both profiles still
 # request the same URL, so per-device settings behave identically.
 cp "$FULL_CONFIG" "$OUT/config.json"
+if [ -f "$FULL_CONFIG.sig" ]; then
+    cp "$FULL_CONFIG.sig" "$OUT/config.json.sig"
+fi
 
 # shellcheck source=config.sh
 source "$HERE/config.sh"

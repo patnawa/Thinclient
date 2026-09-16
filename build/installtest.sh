@@ -13,9 +13,9 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/build/config.sh"
 MODE="${1:-bios}"
 ISO="${ISO:-$REPO/out/${IMAGE_NAME}-${DISTRO_VERSION}.iso}"
-KERNEL="$REPO/out/pxe/thinclient/vmlinuz"
-INITRD="$REPO/out/pxe/thinclient/initrd.img"
-OUT="$REPO/out/installtest-$MODE"
+KERNEL="${PXE:-${OUTDIR:-$REPO/out}/pxe}/thinclient/vmlinuz"
+INITRD="${PXE:-${OUTDIR:-$REPO/out}/pxe}/thinclient/initrd.img"
+OUT="${INSTALLTEST_OUT:-$REPO/out/installtest-$MODE}"
 DISK="$OUT/target.qcow2"
 MON=/tmp/tc-install-monitor.sock
 
@@ -117,6 +117,9 @@ mapfile -t FIRMWARE < <(firmware)          # fresh NVRAM, so no cached boot entr
 qemu-system-x86_64 "${ACCEL[@]}" ${FIRMWARE+"${FIRMWARE[@]}"} \
     -m 2560 -smp 4 \
     -drive "file=$DISK,format=qcow2,if=virtio" -boot c \
+    -device virtio-serial-pci \
+    -chardev "file,id=tcboot,path=$OUT/ready.jsonl" \
+    -device virtserialport,chardev=tcboot,name=org.thinclient.test \
     -vga std -netdev user,id=n0 -device e1000,netdev=n0 \
     -display none -monitor "unix:$MON,server,nowait" \
     -serial "file:$OUT/boot-serial.log" \
@@ -132,12 +135,13 @@ for T in 20 40 60 90; do
     mean=$(convert "$OUT/installed-t$T.png" -format '%[fx:int(mean*255)]' info: 2>/dev/null || echo 0)
     echo "  t=${T}s  brightness $mean"
     [ "${mean:-0}" -gt "$BEST" ] && BEST=$mean
+    grep -q '"event": "ui_ready"' "$OUT/ready.jsonl" && break
 done
 
 mon "quit"; sleep 2; kill -9 "$QEMU" 2>/dev/null
 
 echo
-if [ "$BEST" -ge 20 ]; then
+if grep -q '"event": "ui_ready"' "$OUT/ready.jsonl"; then
     echo "RESULT: the installed disk booted to a graphical session"
 else
     echo "RESULT: the installed disk did NOT reach a session (max brightness $BEST)"
