@@ -71,7 +71,7 @@ if [ "$MODE" = "--tftp-first" ] && [ -f "$PXE/grub/grub.cfg" ]; then
         sed -i \
             -e 's/^set default=.*/set default=3/' \
             -e 's/^set fallback=.*/set fallback=0/' \
-            -e 's/^set timeout=.*/set timeout=5/' \
+            -e 's/^set timeout=.*/set timeout=2/' \
             -e 's/^menuentry "Lite Auto Cache - HTTP fast path (recommended)" {$/menuentry "Lite Auto Cache - HTTP fast path" {/' \
             -e 's/^menuentry "Lite Auto Cache - TFTP recovery" {$/menuentry "Lite Auto Cache - restart-safe (recommended)" {/' \
             "$PXE/grub/grub.cfg"

@@ -28,6 +28,18 @@ services:
     command: ["tftp"]
     environment:
       TFTP_LISTEN: ${PXE_LISTEN:-0.0.0.0}:69
+    # in.tftpd --verbose only logs through syslog. Without the host socket
+    # every request is silently dropped, and the firmware TFTP phase - the
+    # slowest part of an old PC's boot - cannot be measured per client:
+    #   journalctl -t in.tftpd --since today
+    volumes:
+      - type: bind
+        source: ${PXE_ROOT:-../../out/pxe}
+        target: /srv/pxe
+        read_only: true
+      - type: bind
+        source: ${TFTP_SYSLOG_SOCKET:-/dev/log}
+        target: /dev/log
     tmpfs:
       - /run
       - /tmp

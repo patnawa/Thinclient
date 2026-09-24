@@ -141,6 +141,12 @@ recorded test evidence before selecting another implementation task.
   driver decisions with evidence instead of adding firmware speculatively.
 - Add a low-RAM test lane. Copying the root to RAM is fast and resilient but may
   be inappropriate for 1 GB clients; document or implement an NFS alternative.
+- Measure firmware TFTP time per physical model from the TFTP journal. Where the
+  kernel and initrd over firmware TFTP dominate old BIOS boots, first evaluate a
+  smaller Lite initrd (candidates: udev `hwdb.bin`, 13.6 MB uncompressed, and
+  early GPU/KMS modules), then iPXE chainloading, which needs a DHCP user-class
+  rule. `lpxelinux.0` over HTTP measured slower than TFTP; see
+  [`HARDWARE-PERFORMANCE.md`](HARDWARE-PERFORMANCE.md#measuring-pxe-boot-phases).
 
 ### P2: maintainability
 

@@ -148,6 +148,11 @@ tc-diag --json
 python3 tools/fleet-report.py collected/*.jsonl
 ```
 
+On the server, the TFTP request log in the host journal (`journalctl -t in.tftpd`)
+together with the HTTP access log and status history times each client's firmware
+TFTP, root-image and configuration phases without access to the client; see
+[measuring PXE boot phases](HARDWARE-PERFORMANCE.md#measuring-pxe-boot-phases).
+
 Compare UI-ready uptime and RAM by version, profile and cache state. Client process
 startup is not remote-login completion. Record physical model, NIC/GPU driver,
 firmware, Secure Boot state, RAM, and observed result alongside inventories.
@@ -186,3 +191,10 @@ combined canary tree. No MAC is selected automatically.
    Do not delete a previous release to make room for a failed replacement.
 7. Record physical boot evidence before broad fleet adoption. Firmware enrollment
    and testing physical machines require access to those machines.
+
+A site menu change that reuses the signed artifacts (default entry, countdown)
+follows the same steps with a new directory made by `cp -al` from the current
+tree. Delete and replace only the menu files there; editing a hard-linked file in
+place would also change the current tree. Confirm the current tree's menu hashes
+afterwards, boot the exact new menus under QEMU on BIOS and UEFI, then switch
+with the guarded procedure above.

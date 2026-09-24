@@ -58,7 +58,7 @@ FULL_CACHE="tc.cache=1 tc.cache.label=$CACHE_LABEL tc.cache.profile=full tc.cach
 cat > "$OUT/pxelinux.cfg/default" <<EOF
 DEFAULT menu.c32
 PROMPT 0
-TIMEOUT 50
+TIMEOUT 20
 MENU TITLE $DISTRO_NAME dual-profile network boot
 
 LABEL lite-cache
@@ -86,7 +86,7 @@ EOF
 cat > "$OUT/grub/grub.cfg" <<EOF
 set default=0
 set fallback=3
-set timeout=5
+set timeout=2
 set timeout_style=menu
 # UEFI firmware only uses TFTP for the small GRUB loader.  Kernel and initrd
 # use HTTP by default because firmware TFTP is painfully slow on older PCs.
@@ -124,7 +124,7 @@ menu $DISTRO_NAME network boot
 item --default lite-cache Lite Auto Cache - best for group boot (recommended)
 item lite-network Lite Network Only - bypass a slow cache USB
 item full Full Drivers Auto Cache - Wi-Fi and uncommon hardware
-choose --default lite-cache --timeout 5000 profile || goto lite-cache
+choose --default lite-cache --timeout 2000 profile || goto lite-cache
 goto \${profile}
 
 :lite-cache

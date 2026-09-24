@@ -41,10 +41,29 @@ tc_cache_is_usb()
 tc_cache_usb_present()
 {
 	# A storage interface is visible before its block node on slow USB media.
-	for interface in /sys/bus/usb/devices/*/bInterfaceClass
+	for interface in "${TC_SYSFS:-/sys}"/bus/usb/devices/*/bInterfaceClass
 	do
 		[ -f "$interface" ] || continue
 		grep -qx '08' "$interface" && return 0
+	done
+	return 1
+}
+
+tc_cache_usb_pending()
+{
+	# True while a USB storage interface has not yet produced a block node.
+	# Built-in card readers enumerate an (empty) disk per slot within about a
+	# second, so once every interface has one, waiting longer cannot reveal a
+	# TCCACHE label; it only delayed every boot on such desktops by 5 s.
+	for interface in "${TC_SYSFS:-/sys}"/bus/usb/devices/*/bInterfaceClass
+	do
+		[ -f "$interface" ] || continue
+		grep -qx '08' "$interface" || continue
+		for block in "${interface%/*}"/host*/target*/*/block/*
+		do
+			[ -e "$block" ] && continue 2
+		done
+		return 0
 	done
 	return 1
 }
@@ -64,9 +83,18 @@ tc_cache_devices()
 	tries=0
 	while [ "$tries" -lt 5 ]
 	do
-		udevadm settle --timeout=1 2>/dev/null || true
+		settled=1
+		udevadm settle --timeout=1 2>/dev/null || settled=0
 		devices="$(blkid -t "LABEL=${TC_CACHE_LABEL}" -o device 2>/dev/null || true)"
 		[ -n "$devices" ] && { printf '%s\n' "$devices"; return 0; }
+		# Settled udev with fully attached USB storage and no label: done.
+		# The explicit wait override keeps the full legacy window.
+		if [ "$settled" = 1 ] \
+			&& [ "$(tc_cache_arg tc.cache.wait 2>/dev/null || true)" != 1 ] \
+			&& ! tc_cache_usb_pending
+		then
+			return 1
+		fi
 		tries=$((tries + 1))
 		sleep 1
 	done

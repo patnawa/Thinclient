@@ -1,5 +1,16 @@
 # ThinClient changelog
 
+## Unreleased
+
+- Stop paying the five-second cache-discovery window on every PXE boot of PCs
+  with an internal USB card reader or other attached USB storage. Discovery now
+  ends as soon as udev is settled and every USB storage interface has its block
+  device; still-attaching storage and `tc.cache.wait=1` keep the bounded wait.
+- Shorten the BIOS/UEFI PXE menu countdown from 5 to 2 seconds. Any key still
+  stops it for recovery entries.
+- Forward the TFTP container's `--verbose` request log to the host journal
+  (`journalctl -t in.tftpd`), so firmware TFTP time can be measured per client.
+
 ## 1.5.1 — 2026-09-16 (prerelease)
 
 - Check installation payloads, tools and configuration before erasing a disk;

@@ -527,7 +527,7 @@ fi
 cat > "$PXE/pxelinux.cfg/default" <<EOF
 DEFAULT menu.c32
 PROMPT 0
-TIMEOUT 50
+TIMEOUT 20
 MENU TITLE $DISTRO_NAME $DISTRO_VERSION (network boot)
 
 LABEL live
@@ -553,7 +553,7 @@ set default=0
 # http module, a proxy in the way - fall through to the TFTP entry rather than
 # leaving a diskless client sitting at a menu nobody is in front of.
 set fallback=1
-set timeout=5
+set timeout=2
 set timeout_style=menu
 menuentry "Start $DISTRO_NAME - HTTP fast path (recommended)" {
     linux  (http,{{HTTP}})/thinclient/vmlinuz $KERNEL_CMDLINE $CACHE_CMDLINE ip=dhcp fetch=http://{{HTTP}}/thinclient/filesystem.squashfs tc.config=http://{{HTTP}}/config.json

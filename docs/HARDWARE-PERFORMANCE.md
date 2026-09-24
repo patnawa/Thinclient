@@ -82,9 +82,52 @@ or customer desktop screenshots. For each exact model, record:
 
 Lite now explicitly includes MMC block and SDHCI drivers. Module presence is a
 structural gate, not evidence that any particular eMMC device has been tested.
-The cache skips discovery retry sleeps only when udev has settled and no USB
-storage interface is present. `tc.cache.wait=1` restores the bounded legacy wait
-for unusual controller firmware; Network Only remains the recovery menu entry.
+The cache skips discovery retry sleeps when udev has settled and no USB storage
+interface is still waiting for its block device, so an internal card reader or
+an unrelated stick no longer costs five seconds per boot. `tc.cache.wait=1`
+restores the bounded legacy wait for unusual controller firmware; Network Only
+remains the recovery menu entry. Sites that deploy no `TCCACHE` media can make
+Network Only the default and skip cache discovery entirely.
+
+## Measuring PXE boot phases
+
+A diskless boot passes through firmware DHCP and the boot loader (TFTP), the
+kernel and initrd (TFTP for BIOS and TFTP-first UEFI), the root image (HTTP) and
+central configuration (HTTP). The TFTP container forwards its request log to the
+host journal, so every phase can be timed per client from the server alone:
+
+```bash
+journalctl -t in.tftpd -o short-precise --since today   # loader, menus, kernel, initrd
+docker compose logs --timestamps http                     # manifest, root image, config
+```
+
+Both logs record when a request starts. The interval from a client's initrd
+request to its first HTTP request is firmware TFTP time plus kernel start. The
+status history (`http-status.json` in the monitor volume) records
+`duration_seconds` for every completed transfer. A root image that takes ten
+times longer than on comparable clients points to a 100 Mb/s NIC, cable or
+switch port, not to the server.
+
+Reference points from a production 1 Gb/s LAN on 2026-09-24 (Lite 1.5.1, 32.2 MB
+initrd, fetched by a fast LAN PC with a lock-step TFTP client as firmware does):
+
+| Transfer | Time | Rate |
+| --- | --- | --- |
+| TFTP, 512-byte blocks | 11.5 s | 2.8 MB/s |
+| TFTP, 1468-byte blocks | 4.4 s | 7.4 MB/s |
+| HTTP | 0.33 s | 98 MB/s |
+
+Firmware PXE stacks are slower per packet than that client, so these are lower
+bounds for old BIOS machines. The 378 MB Lite root image took 3.2 s on 1 Gb/s
+links and 32 s on 100 Mb/s links on the same network.
+
+Evaluated and rejected for BIOS clients:
+
+- `lpxelinux.0` loading the kernel and initrd over HTTP was slower than firmware
+  TFTP in QEMU (33.2 s and 38.5 s VM launch to UI, versus 26.6 s and 27.6 s),
+  because its TCP stack runs through the firmware network driver.
+- Raising initramfs zstd compression from level 1 to 19 shrinks the Lite initrd
+  only from 34.5 MB to 30.6 MB; most of it is already-compressed kernel modules.
 
 ## Checksum-verified load measurements
 

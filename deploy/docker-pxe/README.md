@@ -251,6 +251,11 @@ sudo docker compose down
 
 - **PXE-E32/TFTP timeout:** confirm UDP 69 is allowed and no other TFTP daemon
   already owns that port (`sudo ss -lunp | grep ':69'`).
+- **Slow boots on older PCs:** the TFTP container logs each request to the host
+  journal. `journalctl -t in.tftpd -o short-precise --since today` shows when a
+  client asked for `pxelinux.0`/`core.efi`, its kernel and its initrd; its next
+  HTTP request (`docker compose logs http`) marks the end of the initrd. Hosts
+  without `/dev/log` set `TFTP_SYSLOG_SOCKET` in `.env` to their syslog socket.
 - **GRUB loads but the OS does not:** inspect `docker compose logs http`, then
   fetch `filesystem.squashfs` from another LAN system.
 - **UEFI access denied:** use `bootx64.efi` for Secure Boot clients.
