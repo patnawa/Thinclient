@@ -430,6 +430,13 @@ class StatusMonitor:
                 self._clients[key] = client
             if anonymous is not None:
                 self._merge_clients(client, anonymous)
+                # Configuration can arrive while a root download is still in
+                # flight. Move its accounting with the client, including the
+                # identity saved for recovery after a server restart.
+                for request in self._active.values():
+                    if request["client_key"] == anonymous_key:
+                        request["client_key"] = key
+                        request["mac"] = mac
         else:
             client = self._clients.get(key)
             if client is None:
@@ -495,6 +502,10 @@ class StatusMonitor:
                 return
 
             status = int(status or 0)
+            if (request["method"] == "GET" and status == 200 and
+                    request["content_length"] is not None and
+                    request["bytes_sent"] != request["content_length"]):
+                interrupted = True
             successful = 200 <= status < 400 and not interrupted
             if successful:
                 self._successful_total += 1
@@ -502,8 +513,7 @@ class StatusMonitor:
                 self._failed_total += 1
             self._bytes_total += request["bytes_sent"]
 
-            client_key = self._client_key(request["ip"], request["mac"])
-            client = self._clients.get(client_key)
+            client = self._clients.get(request["client_key"])
             if client is not None:
                 client["last_seen_epoch"] = finished_epoch
                 client["last_path"] = request["path"]
@@ -511,7 +521,7 @@ class StatusMonitor:
                 client["bytes_sent"] += request["bytes_sent"]
 
             is_boot = (
-                successful and request["method"] == "GET" and
+                successful and status == 200 and request["method"] == "GET" and
                 os.path.basename(request["path"]).casefold() ==
                 "filesystem.squashfs"
             )
@@ -1422,8 +1432,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None
         directory = os.path.dirname(requested_path)
         suffix = ".sig" if requested.endswith(".sig") else ""
-        candidate = os.path.join(directory, "config-%s.json%s" % (mac.replace(":", "-"), suffix))
-        return candidate if os.path.isfile(candidate) else None
+        candidate = os.path.join(directory, "config-%s.json" % mac.replace(":", "-"))
+        # Select the payload first, then its signature. An orphaned signature
+        # must not replace the global one, and an unsigned device override must
+        # return 404 for its signature instead of serving the global signature.
+        return candidate + suffix if os.path.isfile(candidate) else None
 
     def log_message(self, fmt, *args):
         if self._request_path() in STATUS_PATHS:

@@ -79,13 +79,13 @@ class TargetNormalization(unittest.TestCase):
             configured_host="xn--bcher-kva.example", configured_port=3389,
         )
 
-    def test_vnc_replaces_an_inherited_rdp_default_port(self):
+    def test_vnc_preserves_explicit_port_and_ignores_stale_rdp_gateway(self):
         self.assert_endpoint(
             {"name": "Lab", "protocol": "vnc", "host": "vnc.example.com",
              "port": 3389, "gateway": "stale-gateway.example.com"},
-            name="Lab", protocol="vnc", host="vnc.example.com", port=5900,
+            name="Lab", protocol="vnc", host="vnc.example.com", port=3389,
             via_gateway=False,
-            configured_host="vnc.example.com", configured_port=5900,
+            configured_host="vnc.example.com", configured_port=3389,
         )
 
     def test_rd_gateway_becomes_the_effective_endpoint(self):
@@ -852,7 +852,7 @@ class FullPreflight(unittest.TestCase):
         self.assertIn("gateway.example.com:4443", report)
         self.assertIn("private RDP service not tested", report)
 
-    def test_vnc_uses_effective_5900_for_tcp_and_rfb_protocol_checks(self):
+    def test_vnc_preserves_explicit_port_for_tcp_and_rfb_protocol_checks(self):
         def run(argv, **_kwargs):
             if argv == self.LOCAL_ADDRESS_COMMAND:
                 return self.completed(self.LOCAL_ADDRESSES_JSON)
@@ -882,12 +882,12 @@ class FullPreflight(unittest.TestCase):
         )
 
         self.assertEqual(
-            [mock.call(("203.0.113.21", 5900), timeout=5),
-             mock.call(("203.0.113.21", 5900), timeout=5)],
+            [mock.call(("203.0.113.21", 3389), timeout=5),
+             mock.call(("203.0.113.21", 3389), timeout=5)],
             connector.call_args_list,
         )
         rdp_probe.assert_not_called()
-        self.assertIn("TCP 5900: OK", report)
+        self.assertIn("TCP 3389: OK", report)
         self.assertIn("VNC: OK", report)
 
     def test_same_lan_target_retains_default_gateway_and_pings_it(self):

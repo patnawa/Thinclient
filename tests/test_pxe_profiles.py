@@ -37,6 +37,63 @@ class MergedGrubTemplateTests(unittest.TestCase):
 
 @unittest.skipIf(os.name == "nt", "requires a POSIX shell and sed")
 class RenderConfigsTests(unittest.TestCase):
+    def _simple_tree(self, directory, content):
+        root = Path(directory)
+        (root / "pxelinux.cfg").mkdir()
+        shutil.copy2(REPO / "pxe" / "render-configs.sh", root)
+        config = root / "pxelinux.cfg" / "default"
+        config.write_text(content, encoding="utf-8")
+        return root, config
+
+    def test_invalid_server_is_rejected_before_modifying_boot_menus(self):
+        for server in ("http://192.0.2.1", "host:0", "host:65536", "host:no",
+                       "host&unexpected", "host|unexpected", "host name", "host:80:90",
+                       "pxe..example", "pxe..", "pxe-.example", "pxe_1.example",
+                       "a" * 64 + ".example", "192.0.2.999"):
+            with self.subTest(server=server), tempfile.TemporaryDirectory() as directory:
+                original = "fetch=http://{{HTTP}}/thinclient/filesystem.squashfs\n"
+                root, config = self._simple_tree(directory, original)
+                result = subprocess.run(["bash", str(root / "render-configs.sh"), server],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(original, config.read_text(encoding="utf-8"))
+
+    def test_valid_hostname_and_decimal_port_are_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, config = self._simple_tree(directory, "fetch=http://{{HTTP}}/root.img\n")
+            subprocess.run(["bash", str(root / "render-configs.sh"), "pxe-1.example.:08080"],
+                           check=True, capture_output=True)
+            self.assertEqual("fetch=http://pxe-1.example.:08080/root.img\n",
+                             config.read_text(encoding="utf-8"))
+
+    def test_partial_template_is_fully_retargeted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, config = self._simple_tree(directory,
+                "fetch=http://{{HTTP}}/thinclient/filesystem.squashfs\n"
+                "tc.config=http://192.0.2.5:8087/config.json\n"
+                "nfsroot=192.0.2.5:/srv/thinclient\n")
+            subprocess.run(["bash", str(root / "render-configs.sh"), "192.0.2.15:8080"],
+                           check=True, capture_output=True)
+            self.assertEqual(
+                "fetch=http://192.0.2.15:8080/thinclient/filesystem.squashfs\n"
+                "tc.config=http://192.0.2.15:8080/config.json\n"
+                "nfsroot=192.0.2.15:/srv/thinclient\n",
+                config.read_text(encoding="utf-8"))
+
+    def test_failed_retarget_is_reported_to_the_deployment_caller(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, _config = self._simple_tree(directory,
+                "fetch=http://192.0.2.5:8087/thinclient/filesystem.squashfs\n")
+            binaries = root / "bin"
+            binaries.mkdir()
+            sed = binaries / "sed"
+            sed.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
+            sed.chmod(0o755)
+            result = subprocess.run(["bash", str(root / "render-configs.sh"), "192.0.2.15"],
+                                    env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"]},
+                                    capture_output=True, text=True)
+            self.assertNotEqual(0, result.returncode)
+
     def _render(self, dual_profile, repetitions=1, mode="--tftp-first"):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

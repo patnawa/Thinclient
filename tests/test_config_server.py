@@ -313,6 +313,8 @@ class ConfigServerHttp(unittest.TestCase):
         self.assertNotIn(b"127.0.0.1", body)
 
     def test_signature_selection_matches_per_device_configuration(self):
+        self.write("config.json", "default config")
+        self.write("config-aa-bb-cc-dd-ee-ff.json", "device config")
         self.write("config.json.sig", "default signature")
         self.write("config-aa-bb-cc-dd-ee-ff.json.sig", "device signature")
         for method in ("GET", "HEAD"):
@@ -321,6 +323,23 @@ class ConfigServerHttp(unittest.TestCase):
             self.assertEqual(200, status)
             self.assertEqual(str(len("device signature")), headers["Content-Length"])
         self.assertEqual(404, self.request("GET", "/config-aa-bb-cc-dd-ee-ff.json.sig")[0])
+
+    def test_orphaned_device_signature_does_not_override_global_signature(self):
+        self.write("config.json", "default config")
+        self.write("config.json.sig", "default signature")
+        self.write("config-aa-bb-cc-dd-ee-ff.json.sig", "old device signature")
+        headers = {"X-ThinClient-MAC": "aa:bb:cc:dd:ee:ff"}
+        self.assertEqual(b"default config", self.request("GET", "/config.json", headers)[2])
+        self.assertEqual(b"default signature", self.request("GET", "/config.json.sig", headers)[2])
+
+    def test_unsigned_device_override_never_uses_global_signature(self):
+        self.write("config.json", "default config")
+        self.write("config.json.sig", "default signature")
+        self.write("config-aa-bb-cc-dd-ee-ff.json", "device config")
+        headers = {"X-ThinClient-MAC": "aa:bb:cc:dd:ee:ff"}
+        self.assertEqual(b"device config", self.request("GET", "/config.json", headers)[2])
+        for method in ("GET", "HEAD"):
+            self.assertEqual(404, self.request(method, "/config.json.sig", headers)[0])
 
     def test_direct_per_device_config_requests_are_rejected(self):
         self.write("config-aa-bb-cc-dd-ee-ff.json", "device config")
@@ -544,6 +563,40 @@ class StatusMonitorState(unittest.TestCase):
         self.assertEqual(1, client["boots"])
         self.assertEqual(2, client["requests"])
         self.assertEqual(1024, client["bytes_sent"])
+
+    def test_identification_during_transfer_keeps_client_download_accounting(self):
+        monitor = config_server.StatusMonitor()
+        root_request = monitor.begin(
+            "GET", "/thinclient/lite/filesystem.squashfs", "192.0.2.10")
+        monitor.set_content_length(root_request, 1024)
+        config_request = monitor.begin(
+            "GET", "/config.json", "192.0.2.10", "aa:bb:cc:dd:ee:ff")
+        monitor.finish(config_request, 200)
+        monitor.add_bytes(root_request, 1024)
+        monitor.finish(root_request, 200)
+        snapshot = monitor.snapshot()
+        self.assertEqual(1, snapshot["totals"]["clients"])
+        client = snapshot["recent_clients"][0]
+        self.assertEqual(1024, client["bytes_sent"])
+        self.assertEqual(1, client["boots"])
+        self.assertEqual(200, client["last_status"])
+
+    def test_cached_response_is_not_counted_as_a_root_image_download(self):
+        monitor = config_server.StatusMonitor()
+        request = monitor.begin("GET", "/filesystem.squashfs", "192.0.2.10")
+        monitor.finish(request, 304)
+        self.assertEqual(0, monitor.snapshot()["totals"]["boots"])
+
+    def test_truncated_transfer_is_failed_even_without_a_socket_exception(self):
+        monitor = config_server.StatusMonitor()
+        request = monitor.begin("GET", "/filesystem.squashfs", "192.0.2.10")
+        monitor.set_content_length(request, 1024)
+        monitor.add_bytes(request, 512)
+        monitor.finish(request, 200)
+        snapshot = monitor.snapshot()
+        self.assertEqual(0, snapshot["totals"]["boots"])
+        self.assertEqual(1, snapshot["totals"]["failed_requests"])
+        self.assertTrue(snapshot["recent_requests"][0]["interrupted"])
 
     def test_snapshot_reports_active_transfer_progress(self):
         monitor = config_server.StatusMonitor()

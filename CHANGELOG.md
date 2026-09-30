@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Preserve explicit RDP/VNC ports when opening Settings. Validate all saved
+  connections, keep errors visible on every tab, and let administrators save
+  after removing the last invalid connection.
+- Honor explicit VNC ports consistently in saved configuration, diagnostics and
+  session launch; use port 5900 only when no usable port was supplied.
+- Update startup auto-connect choices immediately when connections are added,
+  copied, renamed or removed, preserving a valid selection.
+- Recover from malformed configuration-status JSON without crashing refresh or
+  the connection manager; required central configuration still fails closed.
+- Reject invalid PXE server addresses before rewriting boot menus, retarget
+  partially rendered menus completely, and report write failures to deployment.
+- Select per-device configuration signatures from the same payload as the JSON,
+  avoiding orphaned signatures and incorrect fallback to a global signature.
+- Keep in-flight download accounting attached to a client when its MAC becomes
+  known. Detect truncated HTTP transfers and exclude cached HTTP 304 responses
+  from completed root-image download counts.
 - Stop paying the five-second cache-discovery window on every PXE boot of PCs
   with an internal USB card reader or other attached USB storage. Discovery now
   ends as soon as udev is settled and every USB storage interface has its block

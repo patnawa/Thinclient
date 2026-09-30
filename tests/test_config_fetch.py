@@ -44,6 +44,29 @@ class ConfigFetch(unittest.TestCase):
         self.assertEqual("stale", status["state"])
         self.assertEqual(previous, (self.run / "remote-config.json").read_text())
 
+    def test_malformed_status_document_does_not_prevent_config_refresh(self):
+        for previous in (["invalid"], "invalid", 42, True):
+            with self.subTest(previous=previous):
+                (self.run / "config-status.json").write_text(json.dumps(previous))
+                status = configfetch.fetch("https://example/config.json", self.run,
+                                           downloader=self.download)
+                self.assertEqual("current", status["state"])
+                self.assertEqual(self.payload, configfetch.read_json(self.run / "remote-config.json"))
+
+    def test_required_config_with_malformed_status_blocks_without_crashing(self):
+        for status in (["current"], "current", 42, True):
+            with self.subTest(status=status):
+                def read(path):
+                    if str(path).endswith("policy.json"):
+                        return {"config_required": True}
+                    if str(path).endswith("config-status.json"):
+                        return status
+                    return self.payload
+                with mock.patch.object(tcconfig, "_read", side_effect=read):
+                    cfg = tcconfig.load()
+                self.assertTrue(cfg["configuration_blocked"])
+                self.assertEqual([], cfg["connections"])
+
     def test_invalid_schema_does_not_publish(self):
         self.payload["schema"] = 999
         status = configfetch.fetch("https://example/config.json", self.run,

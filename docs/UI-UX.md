@@ -39,6 +39,10 @@ normal-user path.
     defaults.
 12. The four README screenshots are generated from deterministic demo data by
     `build/uitest.sh`; no workstation identity or customer endpoint is captured.
+13. Settings preserves explicit ports when a connection is opened. Save checks
+    every connection, including unselected rows, with validation feedback above
+    the action buttons on every tab. Startup choices track connection edits and
+    return to the connection list if the selected startup connection is removed.
 
 ## Interaction and privacy rules
 

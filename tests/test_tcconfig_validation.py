@@ -12,6 +12,7 @@ repo_module_dir = Path(__file__).resolve().parents[1] / "overlay/usr/local/lib/t
 sys.path.insert(0, str(repo_module_dir if repo_module_dir.is_dir()
                        else "/usr/local/lib/thinclient"))
 import tcconfig  # noqa: E402
+import networkdiag  # noqa: E402
 
 
 class ConfigValidation(unittest.TestCase):
@@ -21,6 +22,20 @@ class ConfigValidation(unittest.TestCase):
         handle.close()
         self.addCleanup(os.unlink, handle.name)
         return tcconfig.load(layers=(handle.name,))
+
+    def test_vnc_port_is_consistent_from_config_through_probe_and_launch(self):
+        for supplied, expected in (({}, 5900), ({"port": None}, 5900),
+                                   ({"port": "bad"}, 5900), ({"port": 3389}, 3389),
+                                   ({"port": 5901}, 5901)):
+            with self.subTest(supplied=supplied):
+                cfg = self.load_payload({"connections": [
+                    {"protocol": "vnc", "host": "vnc.example.test", **supplied}]})
+                connection = cfg["connections"][0]
+                self.assertEqual(expected, connection["port"])
+                self.assertEqual(expected, networkdiag.normalize_target(connection)["port"])
+                with mock.patch.object(tcconfig, "vnc_binary", return_value="xtigervncviewer"):
+                    argv, _ = tcconfig.build_command(connection, cfg["device"])
+                self.assertIn("vnc.example.test::%d" % expected, argv)
 
     def test_numbers_are_clamped_and_malformed_values_use_defaults(self):
         cfg = self.load_payload({

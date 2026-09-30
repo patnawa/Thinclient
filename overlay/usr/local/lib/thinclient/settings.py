@@ -102,12 +102,15 @@ class SettingsDialog(Gtk.Dialog):
 
         self.result = copy.deepcopy(cfg)
         self.current = None                     # id of the connection being edited
+        self._loading_form = False
+        self._invalid_connection_id = None
 
         notebook = Gtk.Notebook()
         notebook.append_page(self._connections_page(), Gtk.Label(label="Connections"))
         notebook.append_page(self._device_page(), Gtk.Label(label="Device"))
         notebook.append_page(self._diagnostics_page(), Gtk.Label(label="Diagnostics"))
         self.get_content_area().pack_start(notebook, True, True, 0)
+        self.get_content_area().pack_start(self.validation, False, False, 0)
 
         self.connect("response", self._on_response)
         self.show_all()
@@ -188,9 +191,10 @@ class SettingsDialog(Gtk.Dialog):
         self.f["display_custom"] = basic.add_row("Custom size", Gtk.Entry())
         self.f["display_custom"].set_placeholder_text("1920x1080")
         self.f["display"].connect("changed", self._on_display_changed)
-        self.validation = Gtk.Label(xalign=0)
+        self.validation = Gtk.Label(xalign=0, margin_start=12, margin_end=12,
+                                    margin_top=6, margin_bottom=6)
         self.validation.set_line_wrap(True)
-        basic.add_wide(self.validation)
+        self.validation.set_max_width_chars(65)
 
         advanced.add_heading("Performance")
         self.f["gfx"] = advanced.add_row("Graphics codec", combo(GFX_MODES, "auto"))
@@ -226,33 +230,35 @@ class SettingsDialog(Gtk.Dialog):
 
         for key in ("name", "host", "gateway"):
             self.f[key].connect("changed", self._validate_form)
-        for key in ("port", "protocol"):
-            self.f[key].connect("changed", self._validate_form)
+        self.f["port"].connect("value-changed", self._validate_form)
+        self.f["protocol"].connect("changed", self._validate_form)
 
     def _on_display_changed(self, widget):
         self.f["display_custom"].set_sensitive(widget.get_active_id() == "custom")
 
+    @staticmethod
+    def _connection_error(connection):
+        if not connection.get("name", "").strip():
+            return "Display name is required."
+        try:
+            networkdiag.normalize_target(connection)
+        except ValueError as exc:
+            return "Fix before saving: %s." % str(exc)
+        return ""
+
     def _validate_form(self, *_):
-        if not self.current:
-            self.validation.set_text("")
-            self.save_button.set_sensitive(True)
+        if self._loading_form:
             return True
-        name = self.f["name"].get_text().strip()
-        if not name:
-            message = "Display name is required."
-        else:
-            candidate = {
-                "name": name,
-                "host": self.f["host"].get_text().strip(),
-                "port": int(self.f["port"].get_value()),
-                "protocol": self.f["protocol"].get_active_id() or "rdp",
-                "gateway": self.f["gateway"].get_text().strip(),
-            }
-            try:
-                networkdiag.normalize_target(candidate)
-                message = ""
-            except ValueError as exc:
-                message = "Fix before saving: %s." % str(exc)
+        self._store_form()
+        self._invalid_connection_id = None
+        message = ""
+        for connection in self.result["connections"]:
+            message = self._connection_error(connection)
+            if message:
+                self._invalid_connection_id = connection["id"]
+                if connection["id"] != self.current:
+                    message = "%s: %s" % (connection["name"] or connection["id"], message)
+                break
         self.validation.set_text(message or "Ready to save.")
         self.save_button.set_sensitive(not message)
         return not message
@@ -273,6 +279,8 @@ class SettingsDialog(Gtk.Dialog):
                 self.f[key].set_sensitive(is_rdp)
         # A protocol switch usually means the port is wrong for the new one.
         port = int(self.f["port"].get_value())
+        if self._loading_form:
+            return
         if not is_rdp and port == 3389:
             self.f["port"].set_value(5900)
         elif is_rdp and port == 5900:
@@ -289,11 +297,13 @@ class SettingsDialog(Gtk.Dialog):
             row.add(label)
             self.conn_list.add(row)
         self.conn_list.show_all()
+        self._refresh_auto_connect()
         if select_id:
             for index, conn in enumerate(self.result["connections"]):
                 if conn["id"] == select_id:
                     self._select_index(index)
                     return
+        self._validate_form()
 
     def _select_index(self, index):
         row = self.conn_list.get_row_at_index(index)
@@ -305,6 +315,7 @@ class SettingsDialog(Gtk.Dialog):
         if row is None:
             self.current = None
             self.form.set_sensitive(False)
+            self._validate_form()
             return
         self.form.set_sensitive(True)
         self.current = row.conn_id
@@ -313,6 +324,16 @@ class SettingsDialog(Gtk.Dialog):
     def _load_form(self, conn):
         if not conn:
             return
+        # Loading stored values fires the same GTK signals as user edits.
+        # Suppress storage/port defaults until every field has been populated.
+        self._loading_form = True
+        try:
+            self._populate_form(conn)
+        finally:
+            self._loading_form = False
+        self._validate_form()
+
+    def _populate_form(self, conn):
         self.f["name"].set_text(conn.get("name", ""))
         self.f["description"].set_text(conn.get("description", ""))
         self.f["group"].set_text(conn.get("group", "Connections"))
@@ -349,15 +370,14 @@ class SettingsDialog(Gtk.Dialog):
                     "redirect_usb_storage", "redirect_usb_devices",
                     "redirect_smartcard", "redirect_printers", "auto_reconnect"):
             self.f[key].set_active(bool(conn.get(key)))
-        self._validate_form()
 
     def _store_form(self):
-        if not self.current:
+        if self._loading_form or not self.current:
             return
         conn = tcconfig.find(self.result, self.current)
         if not conn:
             return
-        conn["name"] = self.f["name"].get_text().strip() or conn["id"]
+        conn["name"] = self.f["name"].get_text().strip()
         conn["description"] = self.f["description"].get_text().strip()
         conn["group"] = self.f["group"].get_text().strip() or "Connections"
         conn["host"] = self.f["host"].get_text().strip()
@@ -382,6 +402,25 @@ class SettingsDialog(Gtk.Dialog):
                     "redirect_usb_storage", "redirect_usb_devices",
                     "redirect_smartcard", "redirect_printers", "auto_reconnect"):
             conn[key] = self.f[key].get_active()
+        for row in self.conn_list.get_children():
+            if row.conn_id == self.current:
+                row.get_child().set_text(conn["name"] or conn["id"])
+                break
+        self._refresh_auto_connect()
+
+    def _refresh_auto_connect(self, selected=None):
+        if not hasattr(self, "d") or "auto_connect" not in self.d:
+            return
+        field = self.d["auto_connect"]
+        if selected is None:
+            selected = field.get_active_id() or ""
+        field.remove_all()
+        field.append("", "Show the connection list")
+        for connection in self.result["connections"]:
+            field.append(connection["id"], "Connect to %s" %
+                         (connection["name"] or connection["id"]))
+        if not field.set_active_id(selected):
+            field.set_active_id("")
 
     def _on_add(self, *_):
         self._store_form()
@@ -449,10 +488,9 @@ class SettingsDialog(Gtk.Dialog):
         self.d["screen_blank_minutes"].set_value(int(device.get("screen_blank_minutes", 0)))
 
         grid.add_heading("Behaviour")
-        auto_options = [("", "Show the connection list")] + \
-                       [(c["id"], "Connect to %s" % c["name"]) for c in self.result["connections"]]
         self.d["auto_connect"] = grid.add_row(
-            "At start-up", combo(auto_options, device.get("auto_connect", "")))
+            "At start-up", Gtk.ComboBoxText())
+        self._refresh_auto_connect(device.get("auto_connect", ""))
         self.d["allow_settings"] = grid.add_wide(
             Gtk.CheckButton(label="Allow users to open Settings"))
         self.d["allow_settings"].set_active(bool(device.get("allow_settings", True)))
@@ -604,6 +642,10 @@ class SettingsDialog(Gtk.Dialog):
         if response == Gtk.ResponseType.OK:
             if not self._validate_form():
                 self.stop_emission_by_name("response")
+                for index, connection in enumerate(self.result["connections"]):
+                    if connection["id"] == self._invalid_connection_id:
+                        self._select_index(index)
+                        break
                 return
             self._store_form()
             self._store_device()

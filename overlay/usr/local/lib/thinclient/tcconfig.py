@@ -230,8 +230,9 @@ def _normalise_connection(raw):
         conn[key] = _enum(conn.get(key), default, choices)
 
     conn["display"] = _display(conn.get("display"))
+    default_port = VNC_DEFAULT_PORT if conn["protocol"] == "vnc" else CONNECTION_DEFAULTS["port"]
     conn["port"] = _bounded_int(
-        conn.get("port"), CONNECTION_DEFAULTS["port"], 1, 65535
+        raw.get("port"), default_port, 1, 65535
     )
     conn["reconnect_delay"] = _bounded_int(
         conn.get("reconnect_delay"), CONNECTION_DEFAULTS["reconnect_delay"], 2, 120
@@ -299,7 +300,8 @@ def load(layers=None):
         policy = _read("/etc/thinclient/policy.json")
         invalid_policy = not isinstance(policy, dict) and os.path.exists("/etc/thinclient/policy.json")
         policy = policy if isinstance(policy, dict) else {}
-        status = _read(os.path.join(RUNDIR, "config-status.json")) or {}
+        status = _read(os.path.join(RUNDIR, "config-status.json"))
+        status = status if isinstance(status, dict) else {}
         if invalid_policy or (policy.get("config_required") and status.get("state") not in ("current", "stale")):
             cfg["connections"] = []
             cfg["device"]["auto_connect"] = ""
@@ -670,8 +672,6 @@ def build_vnc_command(conn, device, debug=False):
         raise RuntimeError("no VNC client installed (build with INCLUDE_VNC=1)")
 
     port = int(conn.get("port") or VNC_DEFAULT_PORT)
-    if port == 3389:                    # an RDP default left behind by a protocol switch
-        port = VNC_DEFAULT_PORT
 
     host = (conn.get("host") or "").strip()
     if ":" in host and not host.startswith("["):

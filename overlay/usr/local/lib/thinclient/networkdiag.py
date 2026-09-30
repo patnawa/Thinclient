@@ -80,8 +80,6 @@ def normalize_target(connection):
         configured_port = int(raw_port)
     except (TypeError, ValueError):
         raise ValueError("invalid server port") from None
-    if protocol == "vnc" and configured_port == 3389:
-        configured_port = 5900
     configured_host, configured_port = _split_endpoint(
         connection.get("host"), configured_port, allow_embedded_port=False
     )

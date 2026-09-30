@@ -98,7 +98,9 @@ def fetch(url, run=Path("/run/thinclient"), policy=None, mac="unknown",
     private = run / ".root"
     remote = run / "remote-config.json"
     status_path = run / "config-status.json"
-    status = read_json(status_path) or {}
+    status = read_json(status_path)
+    if not isinstance(status, dict):
+        status = {}
     started = time.monotonic()
     url = policy.get("config_url") or url
     status.update(state="local", source="media" if (run / "media-config.json").is_file()
