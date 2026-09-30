@@ -12,6 +12,8 @@ BOOT_STATUS_FILE="${TC_CACHE_BOOT_STATUS_FILE:-/run/thinclient/cache-boot-status
 MOUNTED=0
 TEMP_FILE=""
 COPY_PID=""
+COPY_STARTING=0
+INTERRUPTED=0
 PROGRESS_TEMP=""
 STATUS_TEMP=""
 FAILURE="cache write failed"
@@ -34,9 +36,16 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-trap 'FAILURE="cache write interrupted"; exit 129' HUP
-trap 'FAILURE="cache write interrupted"; exit 130' INT
-trap 'FAILURE="cache write interrupted"; exit 143' TERM
+interrupt() {
+    FAILURE="cache write interrupted"
+    INTERRUPTED="$1"
+    # A signal may arrive after the fork but before COPY_PID is assigned. Let
+    # that assignment finish so cleanup can stop and reap the writer.
+    [ "$COPY_STARTING" -eq 1 ] || exit "$INTERRUPTED"
+}
+trap 'interrupt 129' HUP
+trap 'interrupt 130' INT
+trap 'interrupt 143' TERM
 
 write_progress() {
     percent="$1"
@@ -152,8 +161,11 @@ for DEVICE in $(blkid -t "LABEL=$LABEL" -o device 2>/dev/null | sort -u); do
     write_progress 0 0 "$TOTAL_BYTES" || exit 1
     # Check the writer itself. A tee | sha256sum pipeline can successfully hash
     # every input byte even when tee cannot write to a full or removed USB.
+    COPY_STARTING=1
     tee "$TEMP_FILE" < "$SOURCE" > /dev/null &
     COPY_PID=$!
+    COPY_STARTING=0
+    [ "$INTERRUPTED" -eq 0 ] || exit "$INTERRUPTED"
     while kill -0 "$COPY_PID" 2>/dev/null; do
         COPIED_BYTES="$(wc -c < "$TEMP_FILE" 2>/dev/null | tr -d '[:space:]')"
         [ -n "$COPIED_BYTES" ] || COPIED_BYTES=0

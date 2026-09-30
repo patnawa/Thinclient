@@ -3,7 +3,7 @@
 # menus for QEMU and deliberately replace central configuration with demo data.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${RELEASE_VERSION:-1.5.2}"
+VERSION="${RELEASE_VERSION:-1.5.3}"
 OUTPUT="${RELEASE_OUT:-$REPO/out/release-$VERSION}"
 for profile in lite full; do
     case "$profile" in lite) image=thinclient-lite-amd64; conf=0; features=0; modules=list ;; full) image=thinclient-full-drivers-amd64; conf=64; features=1; modules=most ;; esac

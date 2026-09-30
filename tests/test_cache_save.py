@@ -4,6 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
@@ -138,6 +139,58 @@ esac
             if process.poll() is None:
                 process.kill()
                 process.communicate()
+
+    def test_cancellation_before_copy_pid_is_registered_reaps_writer(self):
+        # Force the scheduler boundary between spawning the copy and recording
+        # its PID. Otherwise the real cancellation race only fails under load.
+        source = SCRIPT.read_text(encoding="utf-8")
+        registration = "    COPY_PID=$!\n"
+        self.assertEqual(1, source.count(registration))
+        paused_script = self.temp / "paused-cache-save"
+        paused_script.write_text(source.replace(
+            registration, '    kill -STOP "$$"\n' + registration), encoding="utf-8")
+        writer_pid_file = self.run / "writer-pid"
+        self._program("tee", '#!/bin/sh\nprintf "%s\\n" "$$" > "$TC_TEST_WRITER_PID"\n'
+                      'exec sleep 30\n')
+        env = dict(self.environment(), TC_TEST_WRITER_PID=str(writer_pid_file))
+        for sig in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=sig):
+                writer_pid_file.unlink(missing_ok=True)
+                process = subprocess.Popen(
+                    ["/bin/sh", str(paused_script)], env=env,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    start_new_session=True,
+                )
+                try:
+                    deadline = time.monotonic() + 3
+                    stopped = False
+                    while time.monotonic() < deadline:
+                        pid, status = os.waitpid(process.pid, os.WNOHANG | os.WUNTRACED)
+                        if pid and os.WIFSTOPPED(status):
+                            stopped = True
+                        if stopped and writer_pid_file.exists():
+                            break
+                        time.sleep(0.01)
+                    self.assertTrue(stopped, "writer never reached the registration boundary")
+                    self.assertTrue(writer_pid_file.exists(), "copy process did not start")
+                    writer_pid = int(writer_pid_file.read_text())
+                    process.send_signal(sig)
+                    process.send_signal(signal.SIGCONT)
+                    process.communicate(timeout=5)
+                    self.assertEqual(128 + sig, process.returncode)
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(writer_pid, 0)
+                    self.assertFalse(any(self.mount.rglob("*.part.*")))
+                    self.assertFalse((self.run / "cache-progress").exists())
+                    self.assertIn("interrupted", (self.run / "cache-status").read_text())
+                finally:
+                    # A failing regression may leave the writer alive after its
+                    # parent exits; clean up only this test's private process group.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate(timeout=5)
 
     def test_progress_is_atomic_and_success_is_verified(self):
         progress = self.run / "cache-progress"

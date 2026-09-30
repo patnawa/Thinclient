@@ -62,10 +62,12 @@ Download the [1.5.0 release ISOs and SHA-256 checksums](https://github.com/patna
 Public images contain factory defaults, not a site's configuration or signing keys.
 Configure your server address and administrator password before deployment.
 
-The [1.5.2 reliability prerelease](https://github.com/patnawa/Thinclient/releases/tag/v1.5.2)
+The [1.5.3 reliability prerelease](https://github.com/patnawa/Thinclient/releases/tag/v1.5.3)
 also provides Lite/Full ISOs and checksums. It fixes connection settings and port
 handling, configuration recovery and signatures, PXE menu rendering, and server
-download accounting. It includes the installer and UI improvements from 1.5.1.
+download accounting. USB-cache cancellation now stops and reaps a copy even when
+a signal arrives before its PID is recorded. It includes the installer and UI
+improvements from 1.5.1.
 Release notes record final-image validation; physical hardware validation remains
 separate from VM boot tests. The earlier [1.5.1 validation and rollout
 results](docs/1.5.1-VALIDATION.md) remain available as historical evidence.
@@ -79,7 +81,7 @@ sudo bash build/build.sh
 sudo bash build/verify-all.sh
 ```
 
-The development build produces `out/thinclient-amd64-1.5.2.iso`. The latest stable
+The development build produces `out/thinclient-amd64-1.5.3.iso`. The latest stable
 release remains 1.5.0. See [Building](#building) for host
 prerequisites and site-specific defaults, then choose [USB](#deploying-by-usb),
 [internal disk](#installing-to-a-clients-internal-disk), or
@@ -188,7 +190,7 @@ sudo bash build/build.sh
 Verify the completed artifact before deployment:
 
 ```bash
-(cd out && sha256sum -c thinclient-amd64-1.5.2.iso.sha256)
+(cd out && sha256sum -c thinclient-amd64-1.5.3.iso.sha256)
 ```
 
 First build takes 15–30 minutes (it downloads a full Debian base plus packages).
@@ -271,8 +273,8 @@ bash build/check.sh
 
 ```
 out/
-  thinclient-amd64-1.5.2.iso     hybrid ISO: burn it, or dd it to a USB stick
-  thinclient-amd64-1.5.2.iso.sha256  exact release integrity/identity digest
+  thinclient-amd64-1.5.3.iso     hybrid ISO: burn it, or dd it to a USB stick
+  thinclient-amd64-1.5.3.iso.sha256  exact release integrity/identity digest
   pxe/
     thinclient/vmlinuz
     thinclient/initrd.img
@@ -404,7 +406,7 @@ embedded `TCCONF` to be writable.
 **Linux / WSL:**
 
 ```bash
-sudo dd if=out/thinclient-amd64-1.5.2.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=out/thinclient-amd64-1.5.3.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 Boot the client from USB. On the boot menu:
@@ -614,7 +616,7 @@ menus to the Debian host, and documents the exact legacy ISC DHCP fields:
 sudo ./deploy/docker-pxe/deploy.sh 192.168.1.20 8080 /srv/thinclient/pxe-dual
 ```
 
-The development helper builds `thinclient-pxe-server:1.5.2` locally. To use the stable release
+The development helper builds `thinclient-pxe-server:1.5.3` locally. To use the stable release
 container from GitHub Container Registry instead:
 
 ```bash

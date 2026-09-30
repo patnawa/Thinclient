@@ -1,5 +1,13 @@
 # ThinClient changelog
 
+## 1.5.3 — 2026-09-30 (prerelease)
+
+- Fix a USB-cache cancellation race present in 1.5.2: defer interruption while
+  starting the copy until its PID is recorded, then stop and reap the writer
+  before removing partial files and unmounting the cache.
+- Add a deterministic regression for HUP, INT and TERM arriving between copy
+  startup and PID registration, alongside the existing interrupted-write checks.
+
 ## 1.5.2 — 2026-09-30 (prerelease)
 
 - Preserve explicit RDP/VNC ports when opening Settings. Validate all saved

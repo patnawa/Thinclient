@@ -6,7 +6,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
-export DISTRO_VERSION="${DISTRO_VERSION:-1.5.2-full}"
+export DISTRO_VERSION="${DISTRO_VERSION:-1.5.3-full}"
 export IMAGE_NAME="${IMAGE_NAME:-thinclient-full-drivers-amd64}"
 export WORKDIR="${WORKDIR:-/opt/tcbuild-full}"
 export OUTDIR="${OUTDIR:-$REPO/out/full}"

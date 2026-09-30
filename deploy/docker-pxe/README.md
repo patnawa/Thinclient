@@ -64,7 +64,7 @@ To build the image directly from a repository checkout:
 cd Thinclient
 sudo docker build \
   --file deploy/docker-pxe/Dockerfile \
-  --tag thinclient-pxe-server:1.5.2 .
+  --tag thinclient-pxe-server:1.5.3 .
 ```
 
 The normal `deploy.sh` command performs this local build automatically. A
@@ -74,7 +74,7 @@ stable 1.5.0 image is also available from GitHub Container Registry:
 sudo docker pull ghcr.io/patnawa/thinclient-pxe-server:1.5.0
 ```
 
-The 1.5.2 prerelease server is published as `:1.5.2`. The publication workflow
+The 1.5.3 prerelease server is published as `:1.5.3`. The publication workflow
 also updates `:latest`, including for prereleases, so use a numbered tag when
 retaining a particular version. The earlier 1.5.1 [validation report](../../docs/1.5.1-VALIDATION.md)
 separates generic ISO tests, signed site-image tests and live-server checks.
