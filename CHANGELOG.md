@@ -4,9 +4,11 @@
 
 - Fix a USB-cache cancellation race present in 1.5.2: defer interruption while
   starting the copy until its PID is recorded, then stop and reap the writer
-  before removing partial files and unmounting the cache.
+  before removing partial files and unmounting the cache. Stop the discarded
+  writer unconditionally so its signal handling cannot stall cleanup.
 - Add a deterministic regression for HUP, INT and TERM arriving between copy
-  startup and PID registration, alongside the existing interrupted-write checks.
+  startup and PID registration, plus a writer that ignores TERM, alongside the
+  existing interrupted-write checks.
 
 ## 1.5.2 — 2026-09-30 (prerelease)
 

@@ -23,7 +23,9 @@ log() { echo "tc-cache-save: $*"; }
 cleanup() {
     result=$?
     if [ -n "$COPY_PID" ]; then
-        kill "$COPY_PID" 2>/dev/null || true
+        # This partial copy is being discarded and needs no graceful shutdown.
+        # Do not let a child's signal handling during startup leave wait stuck.
+        kill -KILL "$COPY_PID" 2>/dev/null || true
         wait "$COPY_PID" 2>/dev/null || true
     fi
     [ -z "$TEMP_FILE" ] || rm -f -- "$TEMP_FILE"

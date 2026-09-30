@@ -192,6 +192,36 @@ esac
                         pass
                     process.communicate(timeout=5)
 
+    def test_termination_reaps_writer_even_if_term_is_ignored(self):
+        # Cancellation discards this copy, so cleanup must not depend on the
+        # child's signal handler or its progress through shell/exec startup.
+        self._program("tee", '#!/bin/sh\ntrap "" TERM\n'
+                      ': > "$TC_TEST_WRITER_READY"\nexec sleep 30\n')
+        ready = self.run / "writer-ready"
+        env = dict(self.environment(), TC_TEST_WRITER_READY=str(ready))
+        process = subprocess.Popen(
+            ["/bin/sh", str(SCRIPT)], env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 3
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "copy process did not start")
+            process.terminate()
+            process.communicate(timeout=5)
+            self.assertEqual(143, process.returncode)
+            self.assertFalse(any(self.mount.rglob("*.part.*")))
+            self.assertFalse((self.run / "cache-progress").exists())
+            self.assertIn("interrupted", (self.run / "cache-status").read_text())
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate(timeout=5)
+
     def test_progress_is_atomic_and_success_is_verified(self):
         progress = self.run / "cache-progress"
         saved = self.run / "cache-status"
