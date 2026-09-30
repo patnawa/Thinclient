@@ -1,7 +1,7 @@
 name: thinclient-pxe
 
 x-pxe-image: &pxe-image
-  image: ${PXE_IMAGE:-thinclient-pxe-server:1.5.1}
+  image: ${PXE_IMAGE:-thinclient-pxe-server:1.5.2}
   build:
     context: ../..
     dockerfile: deploy/docker-pxe/Dockerfile

@@ -1,6 +1,6 @@
 # Hardware and performance validation
 
-1.5.1 is a published prerelease. The default rollout recommendation is to keep
+1.5.2 follows 1.5.1 as a prerelease. The default rollout recommendation is to keep
 immutable current/previous trees and test a non-critical, explicitly selected
 physical client before fleet promotion. The site operator explicitly approved
 1.5.1 promotion after the complete VM gates; that exception is recorded in the
@@ -42,9 +42,9 @@ not a claim of Gen3–Gen10 physical compatibility.
 Run both normal release gates first, then the supplemental matrix sequentially:
 
 ```bash
-RELEASE_VERSION=1.5.1 RELEASE_OUT="$PWD/out/candidate-1.5.1" bash build/verify-release.sh
-TC_CONFIG_LOCAL=/dev/null DISTRO_VERSION=1.5.1-lite IMAGE_NAME=thinclient-lite-amd64 \
-  OUTDIR="$PWD/out/candidate-1.5.1/lite" bash build/hardware-matrix.sh
+RELEASE_VERSION=1.5.2 RELEASE_OUT="$PWD/out/release-1.5.2" bash build/verify-release.sh
+TC_CONFIG_LOCAL=/dev/null DISTRO_VERSION=1.5.2-lite IMAGE_NAME=thinclient-lite-amd64 \
+  OUTDIR="$PWD/out/release-1.5.2/lite" bash build/hardware-matrix.sh
 ```
 
 The matrix covers a baseline x86-64 CPU, 2 GiB RAM, standard/virtio graphics,
@@ -134,7 +134,7 @@ Evaluated and rejected for BIOS clients:
 Start a candidate server on loopback using a separate port and history file:
 
 ```bash
-python3 tools/tc-config-server.py --root out/candidate-1.5.1/full/pxe \
+python3 tools/tc-config-server.py --root out/release-1.5.2/full/pxe \
   --bind 127.0.0.1 --port 18081 --max-workers 128 \
   --state-file out/benchmark-status.json
 ```
@@ -143,7 +143,7 @@ In a second terminal:
 
 ```bash
 python3 tools/pxe-benchmark.py http://127.0.0.1:18081/thinclient/filesystem.squashfs \
-  --artifact out/candidate-1.5.1/full/pxe/thinclient/filesystem.squashfs \
+  --artifact out/release-1.5.2/full/pxe/thinclient/filesystem.squashfs \
   --clients 1,10,50 --output out/benchmark.json
 ```
 

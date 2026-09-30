@@ -1,6 +1,6 @@
 # ThinClient changelog
 
-## Unreleased
+## 1.5.2 — 2026-09-30 (prerelease)
 
 - Preserve explicit RDP/VNC ports when opening Settings. Validate all saved
   connections, keep errors visible on every tab, and let administrators save
